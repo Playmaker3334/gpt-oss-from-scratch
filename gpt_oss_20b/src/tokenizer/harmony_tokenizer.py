@@ -55,6 +55,16 @@ class HarmonyTokenizer:
             "<|output|>": 200011,
         }
         
+        # AGREGADO: Propiedades que espera main.py
+        self.bos_token_id = self.special_tokens["<|start|>"]  # 200000
+        self.eos_token_id = self.special_tokens["<|end|>"]    # 200001
+        self.pad_token_id = self.special_tokens["<|pad|>"]    # 200002
+        
+        # Tokens como strings
+        self.bos_token = "<|start|>"
+        self.eos_token = "<|end|>"
+        self.pad_token = "<|pad|>"
+        
         # Reverse mapping
         self.id_to_token = {v: k for k, v in self.special_tokens.items()}
         
@@ -362,8 +372,22 @@ class HarmonyTokenizer:
             "special_tokens": self.special_tokens
         }
         
+        # AGREGADO: Guardar también el archivo de configuración del tokenizer en formato JSON
+        tokenizer_config = {
+            "bos_token": self.bos_token,
+            "eos_token": self.eos_token,
+            "pad_token": self.pad_token,
+            "bos_token_id": self.bos_token_id,
+            "eos_token_id": self.eos_token_id,
+            "pad_token_id": self.pad_token_id,
+            "tokenizer_class": "HarmonyTokenizer"
+        }
+        
         with open(os.path.join(save_directory, "tokenizer_config.json"), "w") as f:
             json.dump(config, f, indent=2)
+            
+        with open(os.path.join(save_directory, "harmony_tokenizer.json"), "w") as f:
+            json.dump(tokenizer_config, f, indent=2)
             
     @classmethod
     def from_pretrained(cls, model_path: str) -> "HarmonyTokenizer":

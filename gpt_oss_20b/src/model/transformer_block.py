@@ -16,7 +16,7 @@ class GPTOSSTransformerBlock(nn.Module):
     Single transformer block for GPT-OSS
     Pre-norm architecture with GQA and MoE
     """
-    
+
     def __init__(
         self,
         hidden_size: int = 2880,
@@ -62,7 +62,7 @@ class GPTOSSTransformerBlock(nn.Module):
         super().__init__()
         self.layer_idx = layer_idx
         self.hidden_size = hidden_size
-        
+
         # Pre-norm for attention
         self.input_layernorm = RMSNorm(
             hidden_size,
@@ -70,7 +70,7 @@ class GPTOSSTransformerBlock(nn.Module):
             device=device,
             dtype=dtype
         )
-        
+
         # Grouped Query Attention
         self.self_attn = GroupedQueryAttention(
             hidden_size=hidden_size,
@@ -87,7 +87,7 @@ class GPTOSSTransformerBlock(nn.Module):
             device=device,
             dtype=dtype
         )
-        
+
         # Pre-norm for MoE
         self.post_attention_layernorm = RMSNorm(
             hidden_size,
@@ -95,7 +95,7 @@ class GPTOSSTransformerBlock(nn.Module):
             device=device,
             dtype=dtype
         )
-        
+
         # Mixture of Experts feedforward
         self.moe = MixtureOfExperts(
             hidden_size=hidden_size,
@@ -107,7 +107,7 @@ class GPTOSSTransformerBlock(nn.Module):
             device=device,
             dtype=dtype
         )
-        
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -120,16 +120,7 @@ class GPTOSSTransformerBlock(nn.Module):
     ) -> Tuple[torch.Tensor, ...]:
         """
         Forward pass through transformer block
-        
-        Args:
-            hidden_states: Input tensor
-            attention_mask: Attention mask
-            position_ids: Position indices
-            past_key_value: Cached KV states
-            output_attentions: Whether to output attention weights
-            output_router_losses: Whether to output MoE losses
-            use_cache: Whether to cache KV states
-            
+
         Returns:
             Tuple containing:
                 - Output hidden states
@@ -138,10 +129,10 @@ class GPTOSSTransformerBlock(nn.Module):
                 - Optional MoE losses
         """
         residual = hidden_states
-        
+
         # Pre-norm and attention
         hidden_states = self.input_layernorm(hidden_states)
-        
+
         attn_outputs = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -150,36 +141,37 @@ class GPTOSSTransformerBlock(nn.Module):
             output_attentions=output_attentions,
             use_cache=use_cache
         )
-        
-        hidden_states = attn_outputs[0]
-        
-        # Residual connection
-        hidden_states = residual + hidden_states
-        
+
+        attn_hidden = attn_outputs[0]
+        hidden_states = residual + attn_hidden  # residual after attention
+
         # Pre-norm and MoE
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        
+
         moe_output, router_losses = self.moe(
             hidden_states,
             output_router_losses=output_router_losses
         )
-        
+
         # Residual connection
         hidden_states = residual + moe_output
-        
-        # Prepare outputs
+
+        # Prepare outputs in a stable, documented order:
+        # (hidden_states, [attn_weights], [cache], [router_losses])
         outputs = (hidden_states,)
-        
+
+        # Optional outputs are appended in a fixed order
         if output_attentions:
             outputs += (attn_outputs[1],)
-            
+
         if use_cache:
+            # cache is always the LAST item returned by self_attn when use_cache=True
             outputs += (attn_outputs[-1],)
-            
+
         if output_router_losses and router_losses is not None:
             outputs += (router_losses,)
-            
+
         return outputs
 
 
@@ -187,7 +179,7 @@ class GPTOSSTransformerStack(nn.Module):
     """
     Stack of transformer blocks for GPT-OSS
     """
-    
+
     def __init__(
         self,
         num_layers: int = 24,
@@ -218,7 +210,7 @@ class GPTOSSTransformerStack(nn.Module):
         super().__init__()
         self.num_layers = num_layers
         self.gradient_checkpointing = gradient_checkpointing
-        
+
         # Create transformer blocks
         self.layers = nn.ModuleList([
             GPTOSSTransformerBlock(
@@ -243,7 +235,7 @@ class GPTOSSTransformerStack(nn.Module):
             )
             for i in range(num_layers)
         ])
-        
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -257,47 +249,40 @@ class GPTOSSTransformerStack(nn.Module):
     ) -> Tuple[torch.Tensor, ...]:
         """
         Forward pass through all transformer layers
-        
-        Args:
-            hidden_states: Input tensor
-            attention_mask: Attention mask
-            position_ids: Position indices
-            past_key_values: Cached KV states for all layers
-            output_attentions: Whether to output attention weights
-            output_hidden_states: Whether to output all hidden states
-            output_router_losses: Whether to output MoE losses
-            use_cache: Whether to cache KV states
-            
+
         Returns:
-            Tuple containing final hidden states and optional outputs
+            (final_hidden_states, next_cache, all_hidden_states, all_attentions, router_losses)
         """
         all_hidden_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
         all_router_losses = [] if output_router_losses else None
         next_cache = () if use_cache else None
-        
+
         for i, layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-                
+
             past_key_value = past_key_values[i] if past_key_values else None
-            
+
             if self.gradient_checkpointing and self.training:
-                # Use gradient checkpointing
-                def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        return module(*inputs)
-                    return custom_forward
-                    
+                # Checkpointing: pass ONLY tensors; capture flags and PKV by closure
+                def custom_forward(hs, am, pid):
+                    return layer(
+                        hs,
+                        attention_mask=am,
+                        position_ids=pid,
+                        past_key_value=past_key_value,
+                        output_attentions=output_attentions,
+                        output_router_losses=output_router_losses,
+                        use_cache=use_cache
+                    )
+
                 layer_outputs = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(layer),
+                    custom_forward,
                     hidden_states,
                     attention_mask,
                     position_ids,
-                    past_key_value,
-                    output_attentions,
-                    output_router_losses,
-                    use_cache
+                    use_reentrant=False
                 )
             else:
                 layer_outputs = layer(
@@ -309,31 +294,46 @@ class GPTOSSTransformerStack(nn.Module):
                     output_router_losses=output_router_losses,
                     use_cache=use_cache
                 )
-                
+
+            # Unpack deterministically: (hs, [attn], [cache], [router])
             hidden_states = layer_outputs[0]
-            
-            if use_cache:
-                next_cache += (layer_outputs[-1] if output_router_losses else layer_outputs[-1],)
-                
+            idx = 1
+
+            attn_out = None
+            cache_out = None
+            router_out = None
+
             if output_attentions:
-                all_attentions += (layer_outputs[1],)
-                
-            if output_router_losses and len(layer_outputs) > 2:
-                router_losses = layer_outputs[-1] if not use_cache else layer_outputs[-2]
-                if router_losses is not None:
-                    all_router_losses.append(router_losses)
-                    
+                attn_out = layer_outputs[idx]
+                idx += 1
+
+            if use_cache:
+                cache_out = layer_outputs[idx]
+                idx += 1
+
+            if output_router_losses and len(layer_outputs) > idx:
+                router_out = layer_outputs[idx]
+
+            if use_cache:
+                next_cache += (cache_out,)
+
+            if output_attentions:
+                all_attentions += (attn_out,)
+
+            if output_router_losses and router_out is not None:
+                all_router_losses.append(router_out)
+
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
-            
-        # Aggregate router losses
+
+        # Aggregate router losses across layers (mean)
         if output_router_losses and all_router_losses:
             total_lb_loss = sum(loss[0] for loss in all_router_losses) / len(all_router_losses)
             total_z_loss = sum(loss[1] for loss in all_router_losses) / len(all_router_losses)
             router_losses = (total_lb_loss, total_z_loss)
         else:
             router_losses = None
-            
+
         return (
             hidden_states,
             next_cache,
