@@ -121,7 +121,11 @@ def compute_model_metrics(outputs, labels, vocab_size: int) -> Dict:
     
     # Perplexity
     if loss is not None:
-        metrics['perplexity'] = torch.exp(loss).item()
+        # Si viene como vector (p.ej. una loss por GPU), usamos el promedio solo para logging
+        if isinstance(loss, torch.Tensor) and loss.dim() > 0:
+            metrics['perplexity'] = torch.exp(loss.mean()).item()
+        else:
+            metrics['perplexity'] = torch.exp(loss).item()
     
     # Next token accuracy
     if logits is not None:
@@ -416,6 +420,9 @@ class Trainer:
                 raw_loss, _, _ = _unpack_outputs(outputs)
                 if raw_loss is None:
                     raise RuntimeError("Model did not return a loss.")
+                # Si DP devuelve un vector (una loss por GPU), reducir a escalar:
+                if isinstance(raw_loss, torch.Tensor) and raw_loss.dim() > 0:
+                    raw_loss = raw_loss.mean()
                 loss = raw_loss / self.grad_accum_steps
 
             # Backward pass
@@ -424,7 +431,8 @@ class Trainer:
             else:
                 loss.backward()
 
-            accumulated_loss = loss.item() * self.grad_accum_steps
+            # Para logging, usamos la loss original (antes de dividir por grad_accum)
+            accumulated_loss = raw_loss.item()
 
             # Optimization step
             if (self.global_step + 1) % self.grad_accum_steps == 0:
@@ -562,8 +570,10 @@ class Trainer:
                 raw_loss, _, _ = _unpack_outputs(outputs)
                 if raw_loss is None:
                     continue
-                loss = raw_loss
-            losses.append(loss.item())
+                # Reducir a escalar si viene como vector de pérdidas por GPU
+                if isinstance(raw_loss, torch.Tensor) and raw_loss.dim() > 0:
+                    raw_loss = raw_loss.mean()
+            losses.append(raw_loss.item())
         self.model.train()
         return sum(losses) / max(1, len(losses))
 
