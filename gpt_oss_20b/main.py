@@ -373,7 +373,7 @@ class Trainer:
 
             # Optimization step
             if (self.global_step + 1) % self.grad_accum_steps == 0:
-                grad_norm = compute_grad_norm(self.model.parameters())
+                grad_norm = compute_grad_norm(self.model)
                 if self.scaler is not None:
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
