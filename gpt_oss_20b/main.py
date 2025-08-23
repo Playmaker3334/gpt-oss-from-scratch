@@ -585,7 +585,7 @@ def main():
         gradient_checkpointing=GRADIENT_CHECKPOINTING,
         tie_word_embeddings=True,
         device=device,
-        dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+        dtype=torch.float32
     )
 
     param_info = count_parameters(model)
