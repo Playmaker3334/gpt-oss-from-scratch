@@ -1,9 +1,9 @@
-# ARCHIVO 1: config/model_config.py
+# ARCHIVO CORREGIDO: config/model_config.py
 # UBICACION: gpt_oss_20b/config/model_config.py
-# ESTE ARCHIVO DEFINE LA CONFIGURACION DEL MODELO REDUCIDO PARA KAGGLE
+# TODOS LOS NOMBRES ESTANDARIZADOS
 
 """
-GPT-OSS Model Configuration - Kaggle Version
+GPT-OSS Model Configuration - Kaggle Version (Fixed)
 """
 
 from dataclasses import dataclass
@@ -12,7 +12,7 @@ from typing import Optional
 
 @dataclass
 class GPTOSSConfig:
-    """Configuration for GPT-OSS models - KAGGLE VERSION"""
+    """Configuration for GPT-OSS models - KAGGLE VERSION (FIXED)"""
     
     # Model size parameters
     model_variant: str = "kaggle"
@@ -33,25 +33,26 @@ class GPTOSSConfig:
     num_experts: int = 8
     num_experts_per_token: int = 2
     intermediate_size: int = 2048
-    router_aux_loss_coef: float = 0.01
+    aux_loss_coef: float = 0.01  # FIXED: era router_aux_loss_coef
     router_jitter_noise: float = 0.0
     
     # Attention sinks
     use_attention_sinks: bool = False
     attention_sink_size: int = 4
     
-    # Sparse attention pattern
+    # Sparse attention pattern - NOMBRES ESTANDARIZADOS
     use_sparse_attention: bool = False
-    sparse_attention_window: int = 128
-    sparse_attention_interval: int = 2
+    sparse_window_size: int = 128  # FIXED: era sparse_attention_window
+    sparse_attention_interval: int = 2  # Mantenido para compatibilidad
     
     # Training configuration
     use_dropout: bool = False
     attention_dropout: float = 0.0
     hidden_dropout: float = 0.0
     
-    # Normalization
+    # Normalization - NOMBRES ESTANDARIZADOS
     layer_norm_epsilon: float = 1e-5
+    rms_norm_eps: float = 1e-5  # ADDED: necesario para main.py
     use_rms_norm: bool = True
     
     # Initialization
@@ -83,6 +84,11 @@ class GPTOSSConfig:
         assert self.hidden_size % self.num_attention_heads == 0
         assert self.num_attention_heads % self.num_key_value_heads == 0
         self.head_dim = self.hidden_size // self.num_attention_heads
+        
+        # Ensure rms_norm_eps and layer_norm_epsilon are synchronized
+        if hasattr(self, 'rms_norm_eps') and hasattr(self, 'layer_norm_epsilon'):
+            if self.use_rms_norm:
+                self.layer_norm_epsilon = self.rms_norm_eps
             
     @property
     def total_params(self) -> int:
