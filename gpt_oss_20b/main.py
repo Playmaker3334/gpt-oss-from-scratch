@@ -1,5 +1,5 @@
 """
-Main training script for GPT-OSS
+Main training script for GPT-OSS - Multi-GPU Version
 """
 
 import os
@@ -146,10 +146,11 @@ def get_system_metrics() -> Dict:
     
     # GPU metrics if available
     if torch.cuda.is_available():
-        gpu_memory = torch.cuda.memory_allocated() / (1024**3)
-        gpu_memory_cached = torch.cuda.memory_reserved() / (1024**3)
-        metrics['gpu_memory_gb'] = gpu_memory
-        metrics['gpu_memory_cached_gb'] = gpu_memory_cached
+        total_gpu_memory = 0
+        for i in range(torch.cuda.device_count()):
+            gpu_memory = torch.cuda.memory_allocated(i) / (1024**3)
+            total_gpu_memory += gpu_memory
+        metrics['gpu_memory_gb'] = total_gpu_memory
         
     return metrics
 
@@ -271,6 +272,23 @@ class Trainer:
         self.output_dir = output_dir
         self.use_wandb = use_wandb
         self._wandb = None
+        
+        # Multi-GPU setup
+        self.is_multi_gpu = False
+        if torch.cuda.device_count() > 1:
+            print(f"🚀 MULTI-GPU DETECTED!")
+            print(f"📊 Available GPUs: {torch.cuda.device_count()}")
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                total_memory = props.total_memory / (1024**3)
+                print(f"   GPU {i}: {props.name} ({total_memory:.1f}GB)")
+            
+            print(f"🔥 Using DataParallel across {torch.cuda.device_count()} GPUs")
+            print(f"💾 Total GPU Memory: {torch.cuda.device_count() * 15:.0f}GB")
+            self.model = torch.nn.DataParallel(self.model)
+            self.is_multi_gpu = True
+        else:
+            print(f"📱 Using single GPU: {torch.cuda.get_device_name()}")
 
         # Initialize metrics tracker
         self.metrics_tracker = MetricsTracker()
@@ -297,8 +315,10 @@ class Trainer:
         else:
             self.eval_loader = None
 
+        # For DataParallel, we need to access the actual model parameters
+        model_params = self.model.module.parameters() if self.is_multi_gpu else self.model.parameters()
         self.optimizer = AdamW(
-            self.model.parameters(),
+            model_params,
             lr=learning_rate,
             betas=(0.9, 0.95),
             weight_decay=0.1
@@ -316,7 +336,9 @@ class Trainer:
                         "batch_size": batch_size,
                         "learning_rate": learning_rate,
                         "max_steps": max_steps,
-                        "model_params": count_parameters(model)
+                        "model_params": count_parameters(model),
+                        "multi_gpu": self.is_multi_gpu,
+                        "num_gpus": torch.cuda.device_count() if torch.cuda.is_available() else 0
                     }
                 )
             except:
@@ -380,14 +402,25 @@ class Trainer:
 
             # Optimization step
             if (self.global_step + 1) % self.grad_accum_steps == 0:
-                grad_norm = compute_grad_norm(self.model)
+                # For multi-GPU, need to compute grad norm correctly
+                if self.is_multi_gpu:
+                    grad_norm = compute_grad_norm(self.model.module)
+                else:
+                    grad_norm = compute_grad_norm(self.model)
+                    
                 if self.scaler is not None:
                     self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                    if self.is_multi_gpu:
+                        torch.nn.utils.clip_grad_norm_(self.model.module.parameters(), self.max_grad_norm)
+                    else:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                    if self.is_multi_gpu:
+                        torch.nn.utils.clip_grad_norm_(self.model.module.parameters(), self.max_grad_norm)
+                    else:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
                     self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
             else:
@@ -429,6 +462,8 @@ class Trainer:
                           f"StepTime: {averages.get('avg_step_time', 0)*1000:.0f}ms | "
                           f"CPU: {system_metrics.get('cpu_percent', 0):.0f}% | "
                           f"RAM: {system_metrics.get('memory_percent', 0):.0f}%")
+                    if self.is_multi_gpu:
+                        print(f"    Multi-GPU: Using {torch.cuda.device_count()} GPUs")
 
             # Wandb logging
             if self.use_wandb and self._wandb is not None:
@@ -507,7 +542,11 @@ class Trainer:
         os.makedirs(save_dir, exist_ok=True)
 
         model_path = os.path.join(save_dir, "pytorch_model.bin")
-        torch.save(self.model.state_dict(), model_path)
+        # For DataParallel, save the module state dict
+        if self.is_multi_gpu:
+            torch.save(self.model.module.state_dict(), model_path)
+        else:
+            torch.save(self.model.state_dict(), model_path)
 
         self.tokenizer.save_pretrained(os.path.join(save_dir, "tokenizer"))
 
@@ -519,7 +558,9 @@ class Trainer:
             "warmup_steps": self.warmup_steps,
             "max_steps": self.max_steps,
             "grad_accum_steps": self.grad_accum_steps,
-            "max_grad_norm": self.max_grad_norm
+            "max_grad_norm": self.max_grad_norm,
+            "multi_gpu": self.is_multi_gpu,
+            "num_gpus": torch.cuda.device_count() if torch.cuda.is_available() else 0
         }
         with open(os.path.join(save_dir, "state.json"), "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
@@ -554,10 +595,22 @@ def main():
     device = get_device()
 
     print("=" * 60)
+    print("🚀 GPT-OSS Multi-GPU Training")
+    print("=" * 60)
     print("Device:", device)
     print("Mixed precision:", args.mixed_precision and torch.cuda.is_available())
     print("W&B:", args.use_wandb)
     print("Data path:", args.data_path)
+    
+    # GPU Information
+    if torch.cuda.is_available():
+        print(f"🔥 CUDA Available: {torch.cuda.is_available()}")
+        print(f"📊 Number of GPUs: {torch.cuda.device_count()}")
+        for i in range(torch.cuda.device_count()):
+            props = torch.cuda.get_device_properties(i)
+            print(f"   GPU {i}: {props.name} ({props.total_memory/(1024**3):.1f}GB)")
+    else:
+        print("❌ CUDA not available")
     print("=" * 60)
 
     tokenizer = get_or_create_tokenizer(TOKENIZER_SAVE_DIR)
