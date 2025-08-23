@@ -34,7 +34,7 @@ EVAL_STEPS = 200
 SAVE_STEPS = 500
 
 USE_WANDB = False
-MIXED_PRECISION = False  # FIXED: Changed to False for stability
+MIXED_PRECISION = False
 GRADIENT_CHECKPOINTING = True
 
 DEFAULT_CONFIG = GPTOSSConfig()
@@ -276,19 +276,20 @@ class Trainer:
         # Multi-GPU setup
         self.is_multi_gpu = False
         if torch.cuda.device_count() > 1:
-            print(f"🚀 MULTI-GPU DETECTED!")
-            print(f"📊 Available GPUs: {torch.cuda.device_count()}")
+            print("MULTI-GPU DETECTED!")
+            print(f"Available GPUs: {torch.cuda.device_count()}")
             for i in range(torch.cuda.device_count()):
                 props = torch.cuda.get_device_properties(i)
                 total_memory = props.total_memory / (1024**3)
                 print(f"   GPU {i}: {props.name} ({total_memory:.1f}GB)")
             
-            print(f"🔥 Using DataParallel across {torch.cuda.device_count()} GPUs")
-            print(f"💾 Total GPU Memory: {torch.cuda.device_count() * 15:.0f}GB")
+            print(f"Using DataParallel across {torch.cuda.device_count()} GPUs")
+            print("WARNING: DataParallel replicates model on each GPU")
+            print("Each GPU will hold a full copy of the model")
             self.model = torch.nn.DataParallel(self.model)
             self.is_multi_gpu = True
         else:
-            print(f"📱 Using single GPU: {torch.cuda.get_device_name()}")
+            print(f"Using single GPU: {torch.cuda.get_device_name()}")
 
         # Initialize metrics tracker
         self.metrics_tracker = MetricsTracker()
@@ -595,7 +596,7 @@ def main():
     device = get_device()
 
     print("=" * 60)
-    print("🚀 GPT-OSS Multi-GPU Training")
+    print("GPT-OSS Multi-GPU Training")
     print("=" * 60)
     print("Device:", device)
     print("Mixed precision:", args.mixed_precision and torch.cuda.is_available())
@@ -604,13 +605,13 @@ def main():
     
     # GPU Information
     if torch.cuda.is_available():
-        print(f"🔥 CUDA Available: {torch.cuda.is_available()}")
-        print(f"📊 Number of GPUs: {torch.cuda.device_count()}")
+        print(f"CUDA Available: {torch.cuda.is_available()}")
+        print(f"Number of GPUs: {torch.cuda.device_count()}")
         for i in range(torch.cuda.device_count()):
             props = torch.cuda.get_device_properties(i)
             print(f"   GPU {i}: {props.name} ({props.total_memory/(1024**3):.1f}GB)")
     else:
-        print("❌ CUDA not available")
+        print("CUDA not available")
     print("=" * 60)
 
     tokenizer = get_or_create_tokenizer(TOKENIZER_SAVE_DIR)
