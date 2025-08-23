@@ -34,7 +34,7 @@ EVAL_STEPS = 200
 SAVE_STEPS = 500
 
 USE_WANDB = False
-MIXED_PRECISION = True
+MIXED_PRECISION = False  # FIXED: Changed to False for stability
 GRADIENT_CHECKPOINTING = True
 
 DEFAULT_CONFIG = GPTOSSConfig()
@@ -338,13 +338,20 @@ class Trainer:
             if self.global_step >= self.max_steps:
                 break
 
-            # Learning rate schedule
-            lr = warmup_cosine_schedule(
-                self.global_step,
-                self.warmup_steps,
-                self.max_steps,
-                self.learning_rate
-            )
+            # FIXED: Learning rate schedule
+            if self.warmup_steps == 0:
+                # No warmup - use constant learning rate
+                lr = self.learning_rate
+            else:
+                # Use warmup schedule with correct parameters
+                lr = warmup_cosine_schedule(
+                    self.global_step,
+                    self.warmup_steps,
+                    self.max_steps,
+                    min_lr=0.0,
+                    max_lr=self.learning_rate
+                )
+            
             for param_group in self.optimizer.param_groups:
                 param_group["lr"] = lr
 
