@@ -1,9 +1,7 @@
 # ARCHIVO CORREGIDO: config/model_config.py
-# UBICACION: gpt_oss_20b/config/model_config.py
-# TODOS LOS NOMBRES ESTANDARIZADOS
 
 """
-GPT-OSS Model Configuration - Kaggle Version (Fixed)
+GPT-OSS Model Configuration - Quick Fix Version
 """
 
 from dataclasses import dataclass
@@ -12,7 +10,7 @@ from typing import Optional
 
 @dataclass
 class GPTOSSConfig:
-    """Configuration for GPT-OSS models - KAGGLE VERSION (FIXED)"""
+    """Configuration for GPT-OSS models - QUICK FIX VERSION"""
     
     # Model size parameters
     model_variant: str = "kaggle"
@@ -29,30 +27,30 @@ class GPTOSSConfig:
     yarn_scale: float = 1.0
     yarn_original_max_position: int = 2048
     
-    # MoE configuration
+    # MoE configuration - FIX DIMENSIONAL
     num_experts: int = 8
     num_experts_per_token: int = 2
-    intermediate_size: int = 2048
-    aux_loss_coef: float = 0.01  # FIXED: era router_aux_loss_coef
+    intermediate_size: int = 768  # FIXED: 2048 → 768 (igual que hidden_size)
+    aux_loss_coef: float = 0.01
     router_jitter_noise: float = 0.0
     
     # Attention sinks
     use_attention_sinks: bool = False
     attention_sink_size: int = 4
     
-    # Sparse attention pattern - NOMBRES ESTANDARIZADOS
+    # Sparse attention pattern
     use_sparse_attention: bool = False
-    sparse_window_size: int = 128  # FIXED: era sparse_attention_window
-    sparse_attention_interval: int = 2  # Mantenido para compatibilidad
+    sparse_window_size: int = 128
+    sparse_attention_interval: int = 2
     
     # Training configuration
     use_dropout: bool = False
     attention_dropout: float = 0.0
     hidden_dropout: float = 0.0
     
-    # Normalization - NOMBRES ESTANDARIZADOS
+    # Normalization
     layer_norm_epsilon: float = 1e-5
-    rms_norm_eps: float = 1e-5  # ADDED: necesario para main.py
+    rms_norm_eps: float = 1e-5
     use_rms_norm: bool = True
     
     # Initialization
