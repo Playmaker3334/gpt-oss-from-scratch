@@ -16,7 +16,6 @@ from ..utils.tensor_utils import create_causal_mask
 
 @dataclass
 class GPTOSSOutput:
-    """Output class for GPT-OSS model"""
     logits: torch.Tensor
     hidden_states: Optional[Tuple[torch.Tensor, ...]] = None
     attentions: Optional[Tuple[torch.Tensor, ...]] = None
@@ -54,37 +53,12 @@ class GPTOSSModel(nn.Module):
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None
     ):
-        """
-        Args:
-            vocab_size: Vocabulary size
-            hidden_size: Hidden dimension
-            num_layers: Number of transformer layers
-            num_attention_heads: Number of attention heads
-            num_key_value_heads: Number of KV heads for GQA
-            intermediate_size: FFN intermediate dimension
-            num_experts: Number of MoE experts
-            num_experts_per_token: Top-K experts per token
-            max_position_embeddings: Maximum sequence length
-            rope_theta: RoPE base
-            use_attention_sinks: Whether to use attention sinks
-            attention_sink_size: Number of sink tokens
-            use_sparse_attention: Whether to use sparse attention
-            sparse_window_size: Window size for sparse attention
-            rms_norm_eps: RMSNorm epsilon
-            aux_loss_coef: MoE auxiliary loss coefficient
-            router_jitter_noise: Router exploration noise
-            pad_token_id: Padding token ID
-            gradient_checkpointing: Whether to use gradient checkpointing
-            device: Device for parameters
-            dtype: Data type for parameters
-        """
         super().__init__()
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.pad_token_id = pad_token_id
 
-        # Token embeddings
         self.embed_tokens = GPTOSSEmbedding(
             vocab_size=vocab_size,
             hidden_size=hidden_size,
@@ -93,7 +67,6 @@ class GPTOSSModel(nn.Module):
             dtype=dtype
         )
 
-        # Transformer layers
         self.layers = GPTOSSTransformerStack(
             num_layers=num_layers,
             hidden_size=hidden_size,
@@ -116,7 +89,6 @@ class GPTOSSModel(nn.Module):
             dtype=dtype
         )
 
-        # Final layer norm
         self.norm = RMSNorm(
             hidden_size,
             eps=rms_norm_eps,
@@ -124,11 +96,9 @@ class GPTOSSModel(nn.Module):
             dtype=dtype
         )
 
-        # Initialize weights
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
-        """Initialize weights"""
         if isinstance(module, nn.Linear):
             module.weight.data.normal_(mean=0.0, std=0.02)
             if module.bias is not None:
@@ -150,28 +120,15 @@ class GPTOSSModel(nn.Module):
         use_cache: bool = False
     ) -> Tuple[torch.Tensor, ...]:
         """
-        Forward pass through GPT-OSS model
+        Forward pass through GPT-OSS model.
 
-        Args:
-            input_ids: Input token IDs
-            attention_mask: Attention mask (1=keep, 0=pad)
-            position_ids: Position IDs
-            past_key_values: Cached KV states
-            output_attentions: Whether to output attention weights
-            output_hidden_states: Whether to output all hidden states
-            output_router_losses: Whether to output MoE losses
-            use_cache: Whether to cache KV states
-
-        Returns:
-            Tuple of outputs
+        Returns a tuple:
+          (hidden_states, past_key_values?, hidden_states_all?, attentions_all?, router_losses?)
         """
         batch_size, seq_len = input_ids.shape
 
-        # Get embeddings
         hidden_states = self.embed_tokens(input_ids)
 
-        # --- FIX: combinar máscara causal + padding ---
-        # causal: (1, 1, S, S) con -inf en la parte superior
         causal = create_causal_mask(
             seq_len,
             hidden_states.device,
@@ -180,19 +137,15 @@ class GPTOSSModel(nn.Module):
         if attention_mask is None:
             attn_bias = causal
         else:
-            # pad: (B, 1, 1, S) con -inf donde attention_mask==0
             pad = (1.0 - attention_mask[:, None, None, :].to(hidden_states.dtype)) \
                   * torch.finfo(hidden_states.dtype).min
             attn_bias = causal + pad
-        # ------------------------------------------------
 
-        # Create position IDs if not provided
         if position_ids is None:
             position_ids = torch.arange(
                 seq_len, device=input_ids.device
             ).unsqueeze(0).expand(batch_size, -1)
 
-        # Forward through transformer layers
         outputs = self.layers(
             hidden_states=hidden_states,
             attention_mask=attn_bias,
@@ -205,8 +158,6 @@ class GPTOSSModel(nn.Module):
         )
 
         hidden_states = outputs[0]
-
-        # Apply final layer norm
         hidden_states = self.norm(hidden_states)
 
         return (hidden_states,) + outputs[1:]
@@ -215,7 +166,6 @@ class GPTOSSModel(nn.Module):
 class GPTOSSForCausalLM(nn.Module):
     """
     GPT-OSS for causal language modeling
-    Includes language modeling head for next token prediction
     """
 
     def __init__(
@@ -243,14 +193,8 @@ class GPTOSSForCausalLM(nn.Module):
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None
     ):
-        """
-        Args:
-            Same as GPTOSSModel plus:
-            tie_word_embeddings: Whether to tie input and output embeddings
-        """
         super().__init__()
 
-        # Base model
         self.model = GPTOSSModel(
             vocab_size=vocab_size,
             hidden_size=hidden_size,
@@ -275,17 +219,14 @@ class GPTOSSForCausalLM(nn.Module):
             dtype=dtype
         )
 
-        # Language modeling head
         self.lm_head = nn.Linear(
             hidden_size, vocab_size,
             bias=False, device=device, dtype=dtype
         )
 
-        # Tie embeddings if specified
         if tie_word_embeddings:
             self.lm_head.weight = self.model.embed_tokens.token_embedding.weight
 
-        # Initialize lm_head if not tied
         if not tie_word_embeddings:
             nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.02)
 
@@ -299,26 +240,16 @@ class GPTOSSForCausalLM(nn.Module):
         output_attentions: bool = False,
         output_hidden_states: bool = False,
         output_router_losses: bool = True,
-        use_cache: bool = False
-    ) -> GPTOSSOutput:
+        use_cache: bool = False,
+        return_tuple: bool = False,
+    ):
         """
-        Forward pass for causal language modeling
+        Forward pass for causal language modeling.
 
-        Args:
-            input_ids: Input token IDs
-            attention_mask: Attention mask
-            position_ids: Position IDs
-            past_key_values: Cached KV states
-            labels: Target labels for language modeling
-            output_attentions: Whether to output attention weights
-            output_hidden_states: Whether to output all hidden states
-            output_router_losses: Whether to output MoE losses
-            use_cache: Whether to cache KV states
-
-        Returns:
-            GPTOSSOutput with logits and optional losses
+        If return_tuple is True, returns:
+          (loss, logits, hidden_states_all, attentions_all, past_key_values, router_losses)
+        Otherwise returns a GPTOSSOutput dataclass.
         """
-        # Forward through base model
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -331,18 +262,13 @@ class GPTOSSForCausalLM(nn.Module):
         )
 
         hidden_states = outputs[0]
-
-        # Get logits
         logits = self.lm_head(hidden_states)
 
-        # Calculate loss if labels provided
         loss = None
         if labels is not None:
-            # Shift for next token prediction
             shift_logits = logits[:, :-1, :].contiguous()
             shift_labels = labels[:, 1:].contiguous()
 
-            # --- FIX: ignorar <pad> en la pérdida ---
             pad_id = self.model.pad_token_id
             shift_labels = shift_labels.masked_fill(shift_labels == pad_id, -100)
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
@@ -350,23 +276,33 @@ class GPTOSSForCausalLM(nn.Module):
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1)
             )
-            # ----------------------------------------
 
-            # Add router losses if available
             if output_router_losses and len(outputs) > 4:
                 router_losses = outputs[4]
                 if router_losses is not None:
                     lb_loss, z_loss = router_losses
                     loss = loss + lb_loss + z_loss
 
-        return GPTOSSOutput(
-            logits=logits,
-            hidden_states=outputs[2] if output_hidden_states else None,
-            attentions=outputs[3] if output_attentions else None,
-            past_key_values=outputs[1] if use_cache else None,
-            router_losses=outputs[4] if output_router_losses and len(outputs) > 4 else None,
-            loss=loss
-        )
+        router_losses = outputs[4] if (output_router_losses and len(outputs) > 4) else None
+
+        if return_tuple:
+            return (
+                loss,
+                logits,
+                outputs[2] if output_hidden_states else None,
+                outputs[3] if output_attentions else None,
+                outputs[1] if use_cache else None,
+                router_losses,
+            )
+        else:
+            return GPTOSSOutput(
+                logits=logits,
+                hidden_states=outputs[2] if output_hidden_states else None,
+                attentions=outputs[3] if output_attentions else None,
+                past_key_values=outputs[1] if use_cache else None,
+                router_losses=router_losses,
+                loss=loss
+            )
 
     def generate(
         self,
@@ -381,21 +317,7 @@ class GPTOSSForCausalLM(nn.Module):
         use_cache: bool = True
     ) -> torch.Tensor:
         """
-        Generate text using the model
-
-        Args:
-            input_ids: Starting input IDs
-            max_length: Maximum generation length
-            temperature: Sampling temperature
-            top_k: Top-k sampling
-            top_p: Top-p (nucleus) sampling
-            do_sample: Whether to sample or use greedy decoding
-            pad_token_id: Padding token ID
-            eos_token_id: End of sequence token ID
-            use_cache: Whether to use KV cache
-
-        Returns:
-            Generated token IDs
+        Generate text using the model.
         """
         batch_size = input_ids.shape[0]
         device = input_ids.device
@@ -403,15 +325,13 @@ class GPTOSSForCausalLM(nn.Module):
         if pad_token_id is None:
             pad_token_id = self.model.pad_token_id
         if eos_token_id is None:
-            eos_token_id = 200001  # Default EOS for Harmony tokenizer
+            eos_token_id = 200001  # Harmony tokenizer default EOS
 
-        # Initialize generation
         generated = input_ids
         past_key_values = None
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
         for _ in range(max_length - input_ids.shape[1]):
-            # Forward pass
             outputs = self.forward(
                 input_ids=generated if not use_cache else generated[:, -1:],
                 past_key_values=past_key_values,
@@ -422,11 +342,9 @@ class GPTOSSForCausalLM(nn.Module):
             logits = outputs.logits[:, -1, :]
             past_key_values = outputs.past_key_values
 
-            # Apply temperature
             if temperature != 1.0:
                 logits = logits / temperature
 
-            # Apply top-k and top-p filtering
             if do_sample:
                 filtered_logits = self._top_k_top_p_filtering(
                     logits, top_k=top_k, top_p=top_p
@@ -436,16 +354,11 @@ class GPTOSSForCausalLM(nn.Module):
             else:
                 next_tokens = torch.argmax(logits, dim=-1, keepdim=True)
 
-            # Update finished sequences
             finished = finished | (next_tokens.squeeze(-1) == eos_token_id)
-
-            # Replace tokens for finished sequences with pad token
             next_tokens[finished] = pad_token_id
 
-            # Append to generated
             generated = torch.cat([generated, next_tokens], dim=-1)
 
-            # Stop if all sequences are finished
             if finished.all():
                 break
 
@@ -459,33 +372,21 @@ class GPTOSSForCausalLM(nn.Module):
         filter_value: float = -float('Inf')
     ) -> torch.Tensor:
         """
-        Filter logits using top-k and/or top-p (nucleus) filtering
-
-        Args:
-            logits: Logits distribution
-            top_k: Keep only top k tokens
-            top_p: Keep top tokens with cumulative probability >= top_p
-            filter_value: Value to assign filtered tokens
-
-        Returns:
-            Filtered logits
+        Filter logits using top-k and/or top-p (nucleus) filtering.
         """
         batch_size, vocab_size = logits.shape
 
-        # Top-k filtering
         if top_k > 0:
             top_k = min(top_k, vocab_size)
             indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
             logits[indices_to_remove] = filter_value
 
-        # Top-p filtering
         if top_p < 1.0:
             sorted_logits, sorted_indices = torch.sort(logits, descending=True)
             cumulative_probs = torch.cumsum(
                 torch.softmax(sorted_logits, dim=-1), dim=-1
             )
 
-            # Remove tokens with cumulative probability above threshold
             sorted_indices_to_remove = cumulative_probs > top_p
             sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
             sorted_indices_to_remove[..., 0] = 0

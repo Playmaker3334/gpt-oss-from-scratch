@@ -94,17 +94,38 @@ class MetricsTracker:
         }
 
 
+# ---- helper para soportar DataParallel (tupla) o dataclass --------------------------------
+def _unpack_outputs(outputs):
+    """
+    Devuelve (loss, logits, router_losses) tanto si 'outputs' es una tupla
+    (como en DataParallel) como si es un objeto con atributos (single-GPU).
+    """
+    if isinstance(outputs, tuple):
+        loss = outputs[0]
+        logits = outputs[1]
+        router_losses = outputs[5] if len(outputs) >= 6 else None
+        return loss, logits, router_losses
+    else:
+        loss = getattr(outputs, "loss", None)
+        logits = getattr(outputs, "logits", None)
+        router_losses = getattr(outputs, "router_losses", None)
+        return loss, logits, router_losses
+# -------------------------------------------------------------------------------------------
+
+
 def compute_model_metrics(outputs, labels, vocab_size: int) -> Dict:
-    """Compute additional model metrics"""
+    """Compute additional model metrics (acepta tupla o dataclass)"""
     metrics = {}
+
+    loss, logits, router_losses = _unpack_outputs(outputs)
     
     # Perplexity
-    if hasattr(outputs, 'loss') and outputs.loss is not None:
-        metrics['perplexity'] = torch.exp(outputs.loss).item()
+    if loss is not None:
+        metrics['perplexity'] = torch.exp(loss).item()
     
     # Next token accuracy
-    if hasattr(outputs, 'logits'):
-        logits = outputs.logits[:, :-1, :].contiguous()
+    if logits is not None:
+        logits = logits[:, :-1, :].contiguous()
         targets = labels[:, 1:].contiguous()
         
         # Top-1 accuracy
@@ -126,8 +147,8 @@ def compute_model_metrics(outputs, labels, vocab_size: int) -> Dict:
         metrics['prediction_entropy'] = entropy.mean().item()
     
     # MoE metrics if available
-    if hasattr(outputs, 'router_losses') and outputs.router_losses is not None:
-        lb_loss, z_loss = outputs.router_losses
+    if router_losses is not None:
+        lb_loss, z_loss = router_losses
         metrics['moe_load_balance_loss'] = lb_loss.item()
         metrics['moe_z_loss'] = z_loss.item()
     
@@ -383,15 +404,19 @@ class Trainer:
             attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
             labels = batch["labels"].to(self.device, non_blocking=True)
 
-            with torch.cuda.amp.autocast(enabled=self.scaler is not None):
+            with torch.amp.autocast("cuda", enabled=self.scaler is not None):
                 outputs = self.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     labels=labels,
                     output_router_losses=True,
-                    use_cache=False
+                    use_cache=False,
+                    return_tuple=self.is_multi_gpu,   # <-- clave para DataParallel
                 )
-                loss = outputs.loss / self.grad_accum_steps
+                raw_loss, _, _ = _unpack_outputs(outputs)
+                if raw_loss is None:
+                    raise RuntimeError("Model did not return a loss.")
+                loss = raw_loss / self.grad_accum_steps
 
             # Backward pass
             if self.scaler is not None:
@@ -525,15 +550,19 @@ class Trainer:
             input_ids = batch["input_ids"].to(self.device, non_blocking=True)
             attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
             labels = batch["labels"].to(self.device, non_blocking=True)
-            with torch.cuda.amp.autocast(enabled=self.scaler is not None):
+            with torch.amp.autocast("cuda", enabled=self.scaler is not None):
                 outputs = self.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     labels=labels,
                     output_router_losses=False,
-                    use_cache=False
+                    use_cache=False,
+                    return_tuple=self.is_multi_gpu,  # <-- clave para DataParallel
                 )
-                loss = outputs.loss
+                raw_loss, _, _ = _unpack_outputs(outputs)
+                if raw_loss is None:
+                    continue
+                loss = raw_loss
             losses.append(loss.item())
         self.model.train()
         return sum(losses) / max(1, len(losses))
