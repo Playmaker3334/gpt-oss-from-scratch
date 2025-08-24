@@ -257,6 +257,9 @@ class Trainer:
         mixed_precision: bool = True,
         device: Optional[torch.device] = None,
         seq_len: int = 2048,
+        preview_every: int = 0,
+        preview_max_new_tokens: int = 40,
+        preview_prompt: str = "",
     ):
         self.device = device or get_device()
         self.model = model.to(self.device)
@@ -273,6 +276,9 @@ class Trainer:
         self.use_wandb = use_wandb
         self._wandb = None
         self.seq_len = seq_len
+        self.preview_every = preview_every
+        self.preview_max_new_tokens = preview_max_new_tokens
+        self.preview_prompt = preview_prompt
 
         # Multi-GPU setup
         self.is_multi_gpu = False
@@ -444,6 +450,16 @@ class Trainer:
                     if self.is_multi_gpu:
                         print(f"    Multi-GPU: Using {torch.cuda.device_count()} GPUs")
 
+                # Vista previa de generación cada N steps
+                if self.preview_every and (self.global_step % self.preview_every == 0):
+                    try:
+                        p_in, p_cont = self._preview_generation(batch)
+                        pin_s = p_in.replace("\n", " ")[:120]
+                        pco_s = p_cont.replace("\n", " ")[:160]
+                        print(f"    Preview: «{pin_s}» → «{pco_s}»")
+                    except Exception as e:
+                        print(f"    Preview failed: {e}")
+
             # Wandb
             if self.use_wandb and self._wandb is not None:
                 try:
@@ -524,6 +540,54 @@ class Trainer:
         self.model.train()
         return sum(losses) / max(1, len(losses))
 
+    @torch.no_grad()
+    def _preview_generation(self, batch):
+        """Pequeña generación para vista previa en consola."""
+        model_ref = self.model.module if self.is_multi_gpu else self.model
+        model_ref.eval()
+
+        # Prompt
+        if self.preview_prompt:
+            prompt_ids = torch.tensor(
+                self.tokenizer.encode(self.preview_prompt, add_special_tokens=False),
+                dtype=torch.long, device=self.device
+            ).unsqueeze(0)
+        else:
+            x = batch["input_ids"][:1].to(self.device)  # (1, L)
+            mask = (x[0] != PAD_ID).nonzero(as_tuple=False).view(-1)
+            start = mask[0].item() if mask.numel() > 0 else 0
+            prompt_ids = x[:, start:start+64]  # prompt corto
+
+        generated = prompt_ids
+        for _ in range(self.preview_max_new_tokens):
+            out = model_ref(
+                input_ids=generated,
+                attention_mask=(generated != PAD_ID).long(),
+                use_cache=False,
+                return_tuple=False
+            )
+            logits = out.logits[:, -1, :]
+            probs = torch.softmax(logits, dim=-1)
+
+            top_k = 50
+            if top_k and top_k < probs.size(-1):
+                topv, topi = torch.topk(probs, k=top_k, dim=-1)
+                idx = torch.multinomial(topv, num_samples=1)
+                next_token = topi.gather(-1, idx)
+            else:
+                next_token = torch.multinomial(probs, num_samples=1)
+
+            generated = torch.cat([generated, next_token], dim=1)
+            eos = getattr(self.tokenizer, "eos_token_id", None)
+            if eos is not None and next_token.item() == eos:
+                break
+
+        text_in = self.tokenizer.decode(prompt_ids[0].tolist(), skip_special_tokens=True)
+        text_out = self.tokenizer.decode(generated[0].tolist(), skip_special_tokens=True)
+
+        model_ref.train()
+        return text_in, text_out[len(text_in):]
+
     def save_checkpoint(self, name: str):
         save_dir = os.path.join(self.output_dir, name)
         os.makedirs(save_dir, exist_ok=True)
@@ -570,6 +634,9 @@ def parse_args():
     parser.add_argument("--mixed_precision", action="store_true" if MIXED_PRECISION else "store_false", default=MIXED_PRECISION)
     parser.add_argument("--seq_len", type=int, default=2048)
     parser.add_argument("--stride", type=int, default=1024)
+    parser.add_argument("--preview_every", type=int, default=0, help="Generar y mostrar un ejemplo cada N steps (0=off)")
+    parser.add_argument("--preview_max_new_tokens", type=int, default=40, help="Tokens nuevos en la vista previa")
+    parser.add_argument("--preview_prompt", type=str, default="", help="Prompt fijo para la vista previa (vacío=usar texto del batch)")
     return parser.parse_args()
 
 
@@ -644,12 +711,15 @@ def main():
         max_steps=args.max_steps,
         gradient_accumulation_steps=args.grad_accum_steps,
         max_grad_norm=args.max_grad_norm,
-        eval_steps=args.eval_steps,       # usar el parámetro, no la constante
-        save_steps=args.save_steps,       # idem
+        eval_steps=args.eval_steps,
+        save_steps=args.save_steps,
         output_dir=args.output_dir,
         use_wandb=args.use_wandb,
         mixed_precision=args.mixed_precision,
-        seq_len=args.seq_len,             # para Tok/s correcto
+        seq_len=args.seq_len,
+        preview_every=args.preview_every,
+        preview_max_new_tokens=args.preview_max_new_tokens,
+        preview_prompt=args.preview_prompt,
     )
 
     print("\n" + "=" * 60)
