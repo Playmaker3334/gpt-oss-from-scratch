@@ -1,7 +1,7 @@
-# ARCHIVO CORREGIDO: config/model_config.py
+# config/model_config.py - VERSIÓN REDUCIDA PARA KAGGLE
 
 """
-GPT-OSS Model Configuration - Quick Fix Version
+GPT-OSS Model Configuration - Reduced for Kaggle GPUs
 """
 
 from dataclasses import dataclass
@@ -10,35 +10,35 @@ from typing import Optional
 
 @dataclass
 class GPTOSSConfig:
-    """Configuration for GPT-OSS models - QUICK FIX VERSION"""
+    """Configuration for GPT-OSS models - REDUCED VERSION"""
     
-    # Model size parameters
-    model_variant: str = "kaggle"
+    # Model size parameters - REDUCIDOS
+    model_variant: str = "kaggle-mini"
     vocab_size: int = 201088  # Harmony tokenizer size
-    hidden_size: int = 768
-    num_layers: int = 6
+    hidden_size: int = 512    # Reducido de 768 -> 512
+    num_layers: int = 4        # Reducido de 6 -> 4
     
-    # Attention configuration
-    num_attention_heads: int = 12
-    num_key_value_heads: int = 3
+    # Attention configuration - REDUCIDOS
+    num_attention_heads: int = 8   # Reducido de 12 -> 8
+    num_key_value_heads: int = 2   # Reducido de 3 -> 2 (para GQA)
     head_dim: int = 64
-    max_position_embeddings: int = 2048
+    max_position_embeddings: int = 512  # Reducido de 2048 -> 512
     rope_theta: float = 10000.0
     yarn_scale: float = 1.0
-    yarn_original_max_position: int = 2048
+    yarn_original_max_position: int = 512
     
-    # MoE configuration - FIX DIMENSIONAL
-    num_experts: int = 8
-    num_experts_per_token: int = 2
-    intermediate_size: int = 768  # FIXED: 2048 → 768 (igual que hidden_size)
+    # MoE configuration - SIGNIFICATIVAMENTE REDUCIDO
+    num_experts: int = 4              # Reducido de 8 -> 4 (menos expertos)
+    num_experts_per_token: int = 2    # Mantener 2 (top-k)
+    intermediate_size: int = 1536     # Aumentado a 3x hidden (512*3) para capacidad
     aux_loss_coef: float = 0.01
     router_jitter_noise: float = 0.0
     
-    # Attention sinks
+    # Attention sinks - DESACTIVADO para ahorrar memoria
     use_attention_sinks: bool = False
     attention_sink_size: int = 4
     
-    # Sparse attention pattern
+    # Sparse attention pattern - DESACTIVADO para simplificar
     use_sparse_attention: bool = False
     sparse_window_size: int = 128
     sparse_attention_interval: int = 2
@@ -69,9 +69,9 @@ class GPTOSSConfig:
     # Activation
     hidden_act: str = "swiglu"
     
-    # Optimization
-    gradient_checkpointing: bool = True
-    use_cache: bool = True
+    # Optimization - CRÍTICO PARA MEMORIA
+    gradient_checkpointing: bool = True  # Mantener True para ahorrar memoria
+    use_cache: bool = False              # False durante training
     
     # Parallelism
     tensor_parallel_size: int = 1
@@ -90,9 +90,9 @@ class GPTOSSConfig:
             
     @property
     def total_params(self) -> int:
-        """Calculate total parameters"""
+        """Calculate total parameters - ~110M with this config"""
         # Embeddings
-        params = self.vocab_size * self.hidden_size
+        params = self.vocab_size * self.hidden_size  # ~103M
         
         # Transformer layers
         per_layer = 0
@@ -116,7 +116,7 @@ class GPTOSSConfig:
         
         # Final layer norm and output
         params += self.hidden_size
-        params += self.hidden_size * self.vocab_size
+        params += self.hidden_size * self.vocab_size  # ~103M
         
         return params
     
