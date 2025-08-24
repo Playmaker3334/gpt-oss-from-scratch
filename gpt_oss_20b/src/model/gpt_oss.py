@@ -265,25 +265,33 @@ class GPTOSSForCausalLM(nn.Module):
         logits = self.lm_head(hidden_states)
 
         loss = None
+        router_losses = outputs[4] if (output_router_losses and len(outputs) > 4) else None
+
         if labels is not None:
+            # Shift
             shift_logits = logits[:, :-1, :].contiguous()
             shift_labels = labels[:, 1:].contiguous()
 
+            # Ignora padding en labels
             pad_id = self.model.pad_token_id
             shift_labels = shift_labels.masked_fill(shift_labels == pad_id, -100)
+
+            # === PÉRDIDA EN FP32 (fuera de autocast) PARA EVITAR NaNs EN FP16 ===
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-            loss = loss_fct(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1)
-            )
+            with torch.amp.autocast("cuda", enabled=False):
+                loss = loss_fct(
+                    shift_logits.float().view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1)
+                )
 
-            if output_router_losses and len(outputs) > 4:
-                router_losses = outputs[4]
-                if router_losses is not None:
-                    lb_loss, z_loss = router_losses
-                    loss = loss + lb_loss + z_loss
-
-        router_losses = outputs[4] if (output_router_losses and len(outputs) > 4) else None
+            # Suma pérdidas del router en fp32 por estabilidad
+            if router_losses is not None:
+                lb_loss, z_loss = router_losses
+                if torch.is_tensor(lb_loss):
+                    lb_loss = lb_loss.float()
+                if torch.is_tensor(z_loss):
+                    z_loss = z_loss.float()
+                loss = loss + lb_loss + z_loss
 
         if return_tuple:
             return (
@@ -349,7 +357,8 @@ class GPTOSSForCausalLM(nn.Module):
                 filtered_logits = self._top_k_top_p_filtering(
                     logits, top_k=top_k, top_p=top_p
                 )
-                probs = torch.softmax(filtered_logits, dim=-1)
+                # fp32 para estabilidad al convertir a probs
+                probs = torch.softmax(filtered_logits.float(), dim=-1)
                 next_tokens = torch.multinomial(probs, num_samples=1)
             else:
                 next_tokens = torch.argmax(logits, dim=-1, keepdim=True)

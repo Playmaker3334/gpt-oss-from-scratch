@@ -1,3 +1,4 @@
+# main.py
 """
 Main training script for GPT-OSS - Multi-GPU Version
 """
@@ -128,12 +129,13 @@ def compute_model_metrics(outputs, labels, vocab_size: int) -> Dict:
         accuracy = (correct * mask).sum() / mask.sum() if mask.sum() > 0 else 0
         metrics['accuracy'] = accuracy.item()
 
-        _, top5_preds = torch.topk(logits, min(5, vocab_size), dim=-1)
+        lf = logits.float()  # <-- métricas en fp32 para estabilidad
+        _, top5_preds = torch.topk(lf, min(5, vocab_size), dim=-1)
         top5_correct = (top5_preds == targets.unsqueeze(-1)).any(dim=-1).float()
         top5_accuracy = (top5_correct * mask).sum() / mask.sum() if mask.sum() > 0 else 0
         metrics['top5_accuracy'] = top5_accuracy.item()
 
-        probs = torch.softmax(logits, dim=-1)
+        probs = torch.softmax(lf, dim=-1)
         entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
         metrics['prediction_entropy'] = entropy.mean().item()
 
@@ -376,6 +378,7 @@ class Trainer:
             attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
             labels = batch["labels"].to(self.device, non_blocking=True)
 
+            # -------- forward con autocast (fp16 si mixed_precision) --------
             with torch.amp.autocast("cuda", enabled=self.scaler is not None):
                 outputs = self.model(
                     input_ids=input_ids,
@@ -385,12 +388,36 @@ class Trainer:
                     use_cache=False,
                     return_tuple=self.is_multi_gpu,
                 )
-                raw_loss, _, _ = _unpack_outputs(outputs)
+                raw_loss, logits_tmp, _ = _unpack_outputs(outputs)
                 if raw_loss is None:
                     raise RuntimeError("Model did not return a loss.")
                 if isinstance(raw_loss, torch.Tensor) and raw_loss.dim() > 0:
                     raw_loss = raw_loss.mean()
-                loss = raw_loss / self.grad_accum_steps
+
+            # --- Guardia anti-NaN/Inf: re-ejecuta el batch en fp32 si hace falta ---
+            if not torch.isfinite(raw_loss):
+                print(f"[WARN] Non-finite loss at step {self.global_step}. Re-running batch in fp32...")
+                del outputs  # liberar por si acaso
+                with torch.amp.autocast("cuda", enabled=False):
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        labels=labels,
+                        output_router_losses=True,
+                        use_cache=False,
+                        return_tuple=self.is_multi_gpu,
+                    )
+                    raw_loss, logits_tmp, _ = _unpack_outputs(outputs)
+                    if isinstance(raw_loss, torch.Tensor) and raw_loss.dim() > 0:
+                        raw_loss = raw_loss.mean()
+                # Debug mínimo
+                if logits_tmp is not None:
+                    lt = logits_tmp.detach().float()
+                    print(f"    debug | logits abs max: {lt.abs().max().item():.2f} | min: {lt.min().item():.2f} | max: {lt.max().item():.2f}")
+                pad_ratio = (attention_mask == 0).float().mean().item()
+                print(f"    debug | pad ratio in batch: {pad_ratio:.2%}")
+
+            loss = raw_loss / self.grad_accum_steps
 
             # Backward
             if self.scaler is not None:
@@ -438,12 +465,12 @@ class Trainer:
             averages = self.metrics_tracker.get_averages()
 
             # LOGGING MEJORADO: Imprimir CADA step
-            if self.global_step % 1 == 0:  # CAMBIADO: cada 1 step en lugar de cada 5
+            if self.global_step % 1 == 0:
                 display_line = format_display_metrics(self.global_step, all_metrics, averages, self.max_steps)
                 print(display_line)
                 
-                # Detalles adicionales cada 25 steps (más frecuente)
-                if self.global_step % 25 == 0 and self.global_step > 0:  # CAMBIADO: cada 25 en lugar de 50
+                # Detalles adicionales cada 25 steps
+                if self.global_step % 25 == 0 and self.global_step > 0:
                     print(f"    Details: Top5_Acc: {all_metrics.get('top5_accuracy', 0)*100:.1f}% | "
                           f"Entropy: {all_metrics.get('prediction_entropy', 0):.2f} | "
                           f"StepTime: {averages.get('avg_step_time', 0)*1000:.0f}ms | "
@@ -491,7 +518,6 @@ class Trainer:
                     pass
 
             # EVALUACIÓN DESACTIVADA PARA NO INTERRUMPIR
-            # Solo evaluar al final del entrenamiento
             if self.eval_loader and self.global_step == self.max_steps - 1:
                 print("\n" + "="*80)
                 print("FINAL EVALUATION")
@@ -587,7 +613,7 @@ class Trainer:
                 return_tuple=False
             )
             logits = out.logits[:, -1, :]
-            probs = torch.softmax(logits, dim=-1)
+            probs = torch.softmax(logits.float(), dim=-1)  # <-- fp32 para estabilidad
 
             top_k = 50
             if top_k and top_k < probs.size(-1):
