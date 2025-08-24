@@ -7,8 +7,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.optim import AdamW
 import argparse
-from tqdm import tqdm
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 import json
 import time
 import psutil
@@ -38,11 +37,11 @@ MIXED_PRECISION = False
 GRADIENT_CHECKPOINTING = True
 
 DEFAULT_CONFIG = GPTOSSConfig()
+PAD_ID = DEFAULT_CONFIG.pad_token_id  # usado en collate_fn
 
 
 class MetricsTracker:
     """Tracks training metrics with rolling averages"""
-    
     def __init__(self, window_size: int = 100):
         self.window_size = window_size
         self.losses = deque(maxlen=window_size)
@@ -51,38 +50,31 @@ class MetricsTracker:
         self.grad_norms = deque(maxlen=window_size)
         self.learning_rates = deque(maxlen=window_size)
         self.step_times = deque(maxlen=window_size)
-        
+
         self.start_time = time.time()
         self.step_start_time = time.time()
         self.batch_size = 1
         self.seq_len = 2048
-        
+
     def update(self, metrics: Dict):
-        """Update metrics with new values"""
         if 'loss' in metrics:
             self.losses.append(metrics['loss'])
             self.perplexities.append(torch.exp(torch.tensor(metrics['loss'])).item())
-        
         if 'accuracy' in metrics:
             self.accuracies.append(metrics['accuracy'])
-            
         if 'grad_norm' in metrics:
             self.grad_norms.append(metrics['grad_norm'])
-            
         if 'lr' in metrics:
             self.learning_rates.append(metrics['lr'])
-            
-        # Time per step
+
         current_time = time.time()
         step_time = current_time - self.step_start_time
         self.step_times.append(step_time)
         self.step_start_time = current_time
-        
+
     def get_averages(self) -> Dict:
-        """Get rolling averages"""
         avg_step_time = sum(self.step_times) / len(self.step_times) if self.step_times else 0
         tokens_per_sec = (self.batch_size * self.seq_len) / avg_step_time if avg_step_time > 0 else 0
-        
         return {
             'avg_loss': sum(self.losses) / len(self.losses) if self.losses else 0,
             'avg_perplexity': sum(self.perplexities) / len(self.perplexities) if self.perplexities else 0,
@@ -116,95 +108,76 @@ def _unpack_outputs(outputs):
 def compute_model_metrics(outputs, labels, vocab_size: int) -> Dict:
     """Compute additional model metrics (acepta tupla o dataclass)"""
     metrics = {}
-
     loss, logits, router_losses = _unpack_outputs(outputs)
-    
-    # Perplexity
+
+    # Perplexity (solo para logging)
     if loss is not None:
-        # Si viene como vector (p.ej. una loss por GPU), usar el promedio solo para logging
         if isinstance(loss, torch.Tensor) and loss.dim() > 0:
             metrics['perplexity'] = torch.exp(loss.mean()).item()
         else:
             metrics['perplexity'] = torch.exp(loss).item()
-    
-    # Next token accuracy
+
+    # Next token accuracy / top-5 / entropy
     if logits is not None:
         logits = logits[:, :-1, :].contiguous()
         targets = labels[:, 1:].contiguous()
-        
-        # Top-1 accuracy
+
         predictions = torch.argmax(logits, dim=-1)
         correct = (predictions == targets).float()
         mask = (targets != -100).float()
         accuracy = (correct * mask).sum() / mask.sum() if mask.sum() > 0 else 0
         metrics['accuracy'] = accuracy.item()
-        
-        # Top-5 accuracy
+
         _, top5_preds = torch.topk(logits, min(5, vocab_size), dim=-1)
         top5_correct = (top5_preds == targets.unsqueeze(-1)).any(dim=-1).float()
         top5_accuracy = (top5_correct * mask).sum() / mask.sum() if mask.sum() > 0 else 0
         metrics['top5_accuracy'] = top5_accuracy.item()
-        
-        # Prediction entropy
+
         probs = torch.softmax(logits, dim=-1)
         entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
         metrics['prediction_entropy'] = entropy.mean().item()
-    
-    # MoE metrics if available
+
+    # MoE metrics si están
     if router_losses is not None:
         lb_loss, z_loss = router_losses
-        # Si vienen apiladas por DP (1-D con num_gpus), reducir a escalar antes de .item()
         if isinstance(lb_loss, torch.Tensor) and lb_loss.dim() > 0:
             lb_loss = lb_loss.mean()
         if isinstance(z_loss, torch.Tensor) and z_loss.dim() > 0:
             z_loss = z_loss.mean()
         metrics['moe_load_balance_loss'] = float(lb_loss.item() if torch.is_tensor(lb_loss) else lb_loss)
         metrics['moe_z_loss'] = float(z_loss.item() if torch.is_tensor(z_loss) else z_loss)
-    
+
     return metrics
 
 
 def get_system_metrics() -> Dict:
-    """Get system resource metrics"""
     metrics = {}
-    
-    # CPU and memory
     metrics['cpu_percent'] = psutil.cpu_percent()
     memory = psutil.virtual_memory()
     metrics['memory_percent'] = memory.percent
     metrics['memory_used_gb'] = memory.used / (1024**3)
-    
-    # GPU metrics if available
     if torch.cuda.is_available():
         total_gpu_memory = 0
         for i in range(torch.cuda.device_count()):
             gpu_memory = torch.cuda.memory_allocated(i) / (1024**3)
             total_gpu_memory += gpu_memory
         metrics['gpu_memory_gb'] = total_gpu_memory
-        
     return metrics
 
 
 def format_display_metrics(step, metrics, averages, max_steps):
-    """Format metrics for console display"""
     progress = step / max_steps * 100
-    
-    # Main metrics line
     main_line = f"Step {step:>6}/{max_steps} ({progress:5.1f}%) | "
     main_line += f"Loss: {metrics.get('loss', 0):.4f} | "
     main_line += f"PPL: {metrics.get('perplexity', 0):.2f} | "
     main_line += f"Acc: {metrics.get('accuracy', 0)*100:.1f}% | "
     main_line += f"LR: {metrics.get('lr', 0):.2e} | "
     main_line += f"Tok/s: {averages.get('tokens_per_sec', 0):.0f}"
-    
     if 'gpu_memory_gb' in metrics:
         main_line += f" | GPU: {metrics['gpu_memory_gb']:.1f}GB"
-    
-    # ETA calculation
     elapsed = averages.get('elapsed_time', 0)
     eta = (elapsed / step * (max_steps - step)) if step > 0 else 0
     main_line += f" | ETA: {eta/60:.0f}m"
-    
     return main_line
 
 
@@ -220,13 +193,7 @@ def get_or_create_tokenizer(save_dir: str) -> HarmonyTokenizer:
 
 
 class TextDataset(Dataset):
-    def __init__(
-        self,
-        data_path: str,
-        tokenizer: HarmonyTokenizer,
-        max_length: int = 2048,
-        stride: int = 1024
-    ):
+    def __init__(self, data_path: str, tokenizer: HarmonyTokenizer, max_length: int = 2048, stride: int = 1024):
         super().__init__()
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -264,7 +231,9 @@ class TextDataset(Dataset):
 def collate_fn(batch):
     input_ids = torch.stack([item["input_ids"] for item in batch], dim=0)
     labels = torch.stack([item["labels"] for item in batch], dim=0)
-    attention_mask = (input_ids != 200002).long()
+    # enmascarar padding en labels para que no cuente en CE/accuracy
+    labels[input_ids == PAD_ID] = -100
+    attention_mask = (input_ids != PAD_ID).long()
     return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
 
 
@@ -286,7 +255,8 @@ class Trainer:
         output_dir: str = "./output",
         use_wandb: bool = False,
         mixed_precision: bool = True,
-        device: Optional[torch.device] = None
+        device: Optional[torch.device] = None,
+        seq_len: int = 2048,
     ):
         self.device = device or get_device()
         self.model = model.to(self.device)
@@ -302,7 +272,8 @@ class Trainer:
         self.output_dir = output_dir
         self.use_wandb = use_wandb
         self._wandb = None
-        
+        self.seq_len = seq_len
+
         # Multi-GPU setup
         self.is_multi_gpu = False
         if torch.cuda.device_count() > 1:
@@ -312,7 +283,6 @@ class Trainer:
                 props = torch.cuda.get_device_properties(i)
                 total_memory = props.total_memory / (1024**3)
                 print(f"   GPU {i}: {props.name} ({total_memory:.1f}GB)")
-            
             print(f"Using DataParallel across {torch.cuda.device_count()} GPUs")
             print("WARNING: DataParallel replicates model on each GPU")
             print("Each GPU will hold a full copy of the model")
@@ -321,10 +291,10 @@ class Trainer:
         else:
             print(f"Using single GPU: {torch.cuda.get_device_name()}")
 
-        # Initialize metrics tracker
+        # Metrics tracker
         self.metrics_tracker = MetricsTracker()
         self.metrics_tracker.batch_size = batch_size
-        self.metrics_tracker.seq_len = 2048
+        self.metrics_tracker.seq_len = seq_len
 
         self.train_loader = DataLoader(
             train_dataset,
@@ -346,15 +316,11 @@ class Trainer:
         else:
             self.eval_loader = None
 
-        # For DataParallel, we need to access the actual model parameters
+        # Optimizer
         model_params = self.model.module.parameters() if self.is_multi_gpu else self.model.parameters()
-        self.optimizer = AdamW(
-            model_params,
-            lr=learning_rate,
-            betas=(0.9, 0.95),
-            weight_decay=0.1
-        )
+        self.optimizer = AdamW(model_params, lr=learning_rate, betas=(0.9, 0.95), weight_decay=0.1)
 
+        # AMP scaler (solo si se pide por flag)
         self.scaler = torch.cuda.amp.GradScaler() if mixed_precision and torch.cuda.is_available() else None
 
         if self.use_wandb:
@@ -377,13 +343,11 @@ class Trainer:
                 self.use_wandb = False
 
         os.makedirs(output_dir, exist_ok=True)
-
         self.global_step = 0
         self.best_eval_loss = float('inf')
 
     def train(self):
         self.model.train()
-        
         print("Training started")
         print("=" * 80)
 
@@ -391,24 +355,17 @@ class Trainer:
             if self.global_step >= self.max_steps:
                 break
 
-            # FIXED: Learning rate schedule
+            # LR schedule
             if self.warmup_steps == 0:
-                # No warmup - use constant learning rate
                 lr = self.learning_rate
             else:
-                # Use warmup schedule with correct parameters
                 lr = warmup_cosine_schedule(
-                    self.global_step,
-                    self.warmup_steps,
-                    self.max_steps,
-                    min_lr=0.0,
-                    max_lr=self.learning_rate
+                    self.global_step, self.warmup_steps, self.max_steps, min_lr=0.0, max_lr=self.learning_rate
                 )
-            
-            for param_group in self.optimizer.param_groups:
-                param_group["lr"] = lr
+            for pg in self.optimizer.param_groups:
+                pg["lr"] = lr
 
-            # Forward pass
+            # Forward
             input_ids = batch["input_ids"].to(self.device, non_blocking=True)
             attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
             labels = batch["labels"].to(self.device, non_blocking=True)
@@ -420,33 +377,30 @@ class Trainer:
                     labels=labels,
                     output_router_losses=True,
                     use_cache=False,
-                    return_tuple=self.is_multi_gpu,   # <-- clave para DataParallel
+                    return_tuple=self.is_multi_gpu,
                 )
                 raw_loss, _, _ = _unpack_outputs(outputs)
                 if raw_loss is None:
                     raise RuntimeError("Model did not return a loss.")
-                # Si DP devuelve un vector (una loss por GPU), reducir a escalar:
                 if isinstance(raw_loss, torch.Tensor) and raw_loss.dim() > 0:
                     raw_loss = raw_loss.mean()
                 loss = raw_loss / self.grad_accum_steps
 
-            # Backward pass
+            # Backward
             if self.scaler is not None:
                 self.scaler.scale(loss).backward()
             else:
                 loss.backward()
 
-            # Para logging, usamos la loss original (antes de dividir por grad_accum)
             accumulated_loss = raw_loss.item()
 
-            # Optimization step
+            # Optim step
             if (self.global_step + 1) % self.grad_accum_steps == 0:
-                # For multi-GPU, need to compute grad norm correctly
                 if self.is_multi_gpu:
                     grad_norm = compute_grad_norm(self.model.module)
                 else:
                     grad_norm = compute_grad_norm(self.model)
-                    
+
                 if self.scaler is not None:
                     self.scaler.unscale_(self.optimizer)
                     if self.is_multi_gpu:
@@ -465,36 +419,22 @@ class Trainer:
             else:
                 grad_norm = 0.0
 
-            # Compute metrics
-            base_metrics = {
-                'loss': accumulated_loss,
-                'lr': lr,
-                'grad_norm': grad_norm
-            }
-            
-            # Model metrics
+            # Métricas
+            base_metrics = {'loss': accumulated_loss, 'lr': lr, 'grad_norm': grad_norm}
             model_metrics = compute_model_metrics(outputs, labels, self.tokenizer.vocab_size)
-            
-            # System metrics (only every few steps to avoid overhead)
+
             system_metrics = {}
             if self.global_step % 10 == 0:
                 system_metrics = get_system_metrics()
-            
-            # Combine metrics
+
             all_metrics = {**base_metrics, **model_metrics, **system_metrics}
-            
-            # Update tracker
             self.metrics_tracker.update(all_metrics)
             averages = self.metrics_tracker.get_averages()
 
-            # Display metrics
-            if self.global_step % 5 == 0:  # Display every 5 steps
-                display_line = format_display_metrics(
-                    self.global_step, all_metrics, averages, self.max_steps
-                )
+            # Log en consola
+            if self.global_step % 5 == 0:
+                display_line = format_display_metrics(self.global_step, all_metrics, averages, self.max_steps)
                 print(display_line)
-                
-                # Detailed metrics every 50 steps
                 if self.global_step % 50 == 0 and self.global_step > 0:
                     print(f"    Details: Top5_Acc: {all_metrics.get('top5_accuracy', 0)*100:.1f}% | "
                           f"Entropy: {all_metrics.get('prediction_entropy', 0):.2f} | "
@@ -504,7 +444,7 @@ class Trainer:
                     if self.is_multi_gpu:
                         print(f"    Multi-GPU: Using {torch.cuda.device_count()} GPUs")
 
-            # Wandb logging
+            # Wandb
             if self.use_wandb and self._wandb is not None:
                 try:
                     log_dict = {
@@ -525,26 +465,29 @@ class Trainer:
                     if 'moe_load_balance_loss' in all_metrics:
                         log_dict["moe/load_balance_loss"] = all_metrics['moe_load_balance_loss']
                         log_dict["moe/z_loss"] = all_metrics['moe_z_loss']
-                    
                     self._wandb.log(log_dict)
                 except:
                     pass
 
-            # Evaluation
+            # Evaluación periódica
             if self.eval_loader and (self.global_step % self.eval_steps == 0) and self.global_step > 0:
                 eval_loss = self.evaluate()
                 print(f"    Evaluation: Loss: {eval_loss:.4f} | PPL: {torch.exp(torch.tensor(eval_loss)):.2f}")
                 if self.use_wandb and self._wandb is not None:
                     try:
-                        self._wandb.log({"eval/loss": eval_loss, "eval/perplexity": torch.exp(torch.tensor(eval_loss)).item()}, step=self.global_step)
+                        self._wandb.log({"eval/loss": eval_loss,
+                                         "eval/perplexity": torch.exp(torch.tensor(eval_loss)).item()},
+                                        step=self.global_step)
                     except:
                         pass
                 if eval_loss < self.best_eval_loss:
                     self.best_eval_loss = eval_loss
                     self.save_checkpoint("best")
                     print(f"    New best model saved (eval_loss: {eval_loss:.4f})")
+                # resetear el cronómetro de paso para que el StepTime no se infle tras la eval
+                self.metrics_tracker.step_start_time = time.time()
 
-            # Save checkpoints
+            # Guardado periódico
             if self.global_step % self.save_steps == 0 and self.global_step > 0:
                 self.save_checkpoint(f"step_{self.global_step}")
                 print(f"    Checkpoint saved: step_{self.global_step}")
@@ -570,12 +513,11 @@ class Trainer:
                     labels=labels,
                     output_router_losses=False,
                     use_cache=False,
-                    return_tuple=self.is_multi_gpu,  # <-- clave para DataParallel
+                    return_tuple=self.is_multi_gpu,
                 )
                 raw_loss, _, _ = _unpack_outputs(outputs)
                 if raw_loss is None:
                     continue
-                # Reducir a escalar si viene como vector de pérdidas por GPU
                 if isinstance(raw_loss, torch.Tensor) and raw_loss.dim() > 0:
                     raw_loss = raw_loss.mean()
             losses.append(raw_loss.item())
@@ -585,16 +527,12 @@ class Trainer:
     def save_checkpoint(self, name: str):
         save_dir = os.path.join(self.output_dir, name)
         os.makedirs(save_dir, exist_ok=True)
-
         model_path = os.path.join(save_dir, "pytorch_model.bin")
-        # For DataParallel, save the module state dict
         if self.is_multi_gpu:
             torch.save(self.model.module.state_dict(), model_path)
         else:
             torch.save(self.model.state_dict(), model_path)
-
         self.tokenizer.save_pretrained(os.path.join(save_dir, "tokenizer"))
-
         state = {
             "global_step": self.global_step,
             "best_eval_loss": self.best_eval_loss,
@@ -646,8 +584,7 @@ def main():
     print("Mixed precision:", args.mixed_precision and torch.cuda.is_available())
     print("W&B:", args.use_wandb)
     print("Data path:", args.data_path)
-    
-    # GPU Information
+
     if torch.cuda.is_available():
         print(f"CUDA Available: {torch.cuda.is_available()}")
         print(f"Number of GPUs: {torch.cuda.device_count()}")
@@ -707,11 +644,12 @@ def main():
         max_steps=args.max_steps,
         gradient_accumulation_steps=args.grad_accum_steps,
         max_grad_norm=args.max_grad_norm,
-        eval_steps=EVAL_STEPS,
-        save_steps=SAVE_STEPS,
+        eval_steps=args.eval_steps,       # usar el parámetro, no la constante
+        save_steps=args.save_steps,       # idem
         output_dir=args.output_dir,
         use_wandb=args.use_wandb,
-        mixed_precision=args.mixed_precision
+        mixed_precision=args.mixed_precision,
+        seq_len=args.seq_len,             # para Tok/s correcto
     )
 
     print("\n" + "=" * 60)
