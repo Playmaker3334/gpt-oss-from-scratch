@@ -30,7 +30,7 @@ class GPTOSSConfig:
     # MoE configuration - SIGNIFICATIVAMENTE REDUCIDO
     num_experts: int = 4              # Reducido de 8 -> 4 (menos expertos)
     num_experts_per_token: int = 2    # Mantener 2 (top-k)
-    intermediate_size: int = 1536     # Aumentado a 3x hidden (512*3) para capacidad
+    intermediate_size: int = 512      # TEMPORAL: igual a hidden_size para evitar bug
     aux_loss_coef: float = 0.01
     router_jitter_noise: float = 0.0
     
