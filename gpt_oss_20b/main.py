@@ -437,26 +437,31 @@ class Trainer:
             self.metrics_tracker.update(all_metrics)
             averages = self.metrics_tracker.get_averages()
 
-            # Log en consola
-            if self.global_step % 5 == 0:
+            # LOGGING MEJORADO: Imprimir CADA step
+            if self.global_step % 1 == 0:  # CAMBIADO: cada 1 step en lugar de cada 5
                 display_line = format_display_metrics(self.global_step, all_metrics, averages, self.max_steps)
                 print(display_line)
-                if self.global_step % 50 == 0 and self.global_step > 0:
+                
+                # Detalles adicionales cada 25 steps (más frecuente)
+                if self.global_step % 25 == 0 and self.global_step > 0:  # CAMBIADO: cada 25 en lugar de 50
                     print(f"    Details: Top5_Acc: {all_metrics.get('top5_accuracy', 0)*100:.1f}% | "
                           f"Entropy: {all_metrics.get('prediction_entropy', 0):.2f} | "
                           f"StepTime: {averages.get('avg_step_time', 0)*1000:.0f}ms | "
                           f"CPU: {system_metrics.get('cpu_percent', 0):.0f}% | "
                           f"RAM: {system_metrics.get('memory_percent', 0):.0f}%")
+                    if 'moe_load_balance_loss' in all_metrics:  # MoE metrics si existen
+                        print(f"    MoE: LoadBalance: {all_metrics['moe_load_balance_loss']:.4f} | "
+                              f"Z-Loss: {all_metrics['moe_z_loss']:.4f}")
                     if self.is_multi_gpu:
                         print(f"    Multi-GPU: Using {torch.cuda.device_count()} GPUs")
 
-                # Vista previa de generación cada N steps
-                if self.preview_every and (self.global_step % self.preview_every == 0):
+                # Vista previa de generación
+                if self.preview_every and (self.global_step % self.preview_every == 0) and self.global_step > 0:
                     try:
                         p_in, p_cont = self._preview_generation(batch)
                         pin_s = p_in.replace("\n", " ")[:120]
                         pco_s = p_cont.replace("\n", " ")[:160]
-                        print(f"    Preview: «{pin_s}» → «{pco_s}»")
+                        print(f"    Preview: '{pin_s}' -> '{pco_s}'")
                     except Exception as e:
                         print(f"    Preview failed: {e}")
 
@@ -485,34 +490,49 @@ class Trainer:
                 except:
                     pass
 
-            # Evaluación periódica
-            if self.eval_loader and (self.global_step % self.eval_steps == 0) and self.global_step > 0:
-                eval_loss = self.evaluate()
-                print(f"    Evaluation: Loss: {eval_loss:.4f} | PPL: {torch.exp(torch.tensor(eval_loss)):.2f}")
-                if self.use_wandb and self._wandb is not None:
-                    try:
-                        self._wandb.log({"eval/loss": eval_loss,
-                                         "eval/perplexity": torch.exp(torch.tensor(eval_loss)).item()},
-                                        step=self.global_step)
-                    except:
-                        pass
-                if eval_loss < self.best_eval_loss:
-                    self.best_eval_loss = eval_loss
-                    self.save_checkpoint("best")
-                    print(f"    New best model saved (eval_loss: {eval_loss:.4f})")
-                # resetear el cronómetro de paso para que el StepTime no se infle tras la eval
-                self.metrics_tracker.step_start_time = time.time()
+            # EVALUACIÓN DESACTIVADA PARA NO INTERRUMPIR
+            # Solo evaluar al final del entrenamiento
+            if self.eval_loader and self.global_step == self.max_steps - 1:
+                print("\n" + "="*80)
+                print("FINAL EVALUATION")
+                print("="*80)
+                try:
+                    eval_loss = self.evaluate()
+                    print(f"Final Evaluation Loss: {eval_loss:.4f} | PPL: {torch.exp(torch.tensor(eval_loss)):.2f}")
+                    if eval_loss < self.best_eval_loss:
+                        self.best_eval_loss = eval_loss
+                        self.save_checkpoint("best")
+                        print(f"Best model saved (eval_loss: {eval_loss:.4f})")
+                except Exception as e:
+                    print(f"Evaluation failed: {e}")
+                print("="*80 + "\n")
 
             # Guardado periódico
             if self.global_step % self.save_steps == 0 and self.global_step > 0:
                 self.save_checkpoint(f"step_{self.global_step}")
-                print(f"    Checkpoint saved: step_{self.global_step}")
+                print(f"    >>> CHECKPOINT SAVED: step_{self.global_step} <<<")
+
+            # Información de progreso cada 100 steps
+            if self.global_step % 100 == 0 and self.global_step > 0:
+                elapsed = averages.get('elapsed_time', 0) / 60  # minutos
+                remaining = (elapsed / self.global_step * (self.max_steps - self.global_step))
+                print("\n" + "-"*60)
+                print(f"PROGRESS REPORT - Step {self.global_step}/{self.max_steps}")
+                print(f"Time elapsed: {elapsed:.1f} min | Remaining: {remaining:.1f} min")
+                print(f"Avg Loss: {averages['avg_loss']:.4f} | Avg PPL: {averages['avg_perplexity']:.2f}")
+                print(f"Avg Accuracy: {averages['avg_accuracy']*100:.2f}% | Tokens/sec: {averages['tokens_per_sec']:.0f}")
+                print("-"*60 + "\n")
 
             self.global_step += 1
 
+        print("\n" + "=" * 80)
+        print("TRAINING COMPLETED!")
         print("=" * 80)
-        print("Training completed")
+        print(f"Total steps: {self.global_step}")
+        print(f"Final loss: {accumulated_loss:.4f}")
+        print(f"Total time: {averages.get('elapsed_time', 0)/60:.1f} minutes")
         self.save_checkpoint("final")
+        print(f"Final model saved to: {self.output_dir}/final")
 
     @torch.no_grad()
     def evaluate(self) -> float:
@@ -630,13 +650,13 @@ def parse_args():
     parser.add_argument("--max_grad_norm", type=float, default=MAX_GRAD_NORM)
     parser.add_argument("--eval_steps", type=int, default=EVAL_STEPS)
     parser.add_argument("--save_steps", type=int, default=SAVE_STEPS)
-    parser.add_argument("--use_wandb", action="store_true" if USE_WANDB else "store_false", default=USE_WANDB)
-    parser.add_argument("--mixed_precision", action="store_true" if MIXED_PRECISION else "store_false", default=MIXED_PRECISION)
+    parser.add_argument("--use_wandb", action="store_true", default=False)
+    parser.add_argument("--mixed_precision", action="store_true", default=False)
     parser.add_argument("--seq_len", type=int, default=2048)
     parser.add_argument("--stride", type=int, default=1024)
     parser.add_argument("--preview_every", type=int, default=0, help="Generar y mostrar un ejemplo cada N steps (0=off)")
     parser.add_argument("--preview_max_new_tokens", type=int, default=40, help="Tokens nuevos en la vista previa")
-    parser.add_argument("--preview_prompt", type=str, default="", help="Prompt fijo para la vista previa (vacío=usar texto del batch)")
+    parser.add_argument("--preview_prompt", type=str, default="", help="Prompt fijo para la vista previa")
     return parser.parse_args()
 
 
