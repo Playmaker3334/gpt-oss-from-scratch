@@ -121,7 +121,7 @@ def compute_model_metrics(outputs, labels, vocab_size: int) -> Dict:
     
     # Perplexity
     if loss is not None:
-        # Si viene como vector (p.ej. una loss por GPU), usamos el promedio solo para logging
+        # Si viene como vector (p.ej. una loss por GPU), usar el promedio solo para logging
         if isinstance(loss, torch.Tensor) and loss.dim() > 0:
             metrics['perplexity'] = torch.exp(loss.mean()).item()
         else:
@@ -153,8 +153,13 @@ def compute_model_metrics(outputs, labels, vocab_size: int) -> Dict:
     # MoE metrics if available
     if router_losses is not None:
         lb_loss, z_loss = router_losses
-        metrics['moe_load_balance_loss'] = lb_loss.item()
-        metrics['moe_z_loss'] = z_loss.item()
+        # Si vienen apiladas por DP (1-D con num_gpus), reducir a escalar antes de .item()
+        if isinstance(lb_loss, torch.Tensor) and lb_loss.dim() > 0:
+            lb_loss = lb_loss.mean()
+        if isinstance(z_loss, torch.Tensor) and z_loss.dim() > 0:
+            z_loss = z_loss.mean()
+        metrics['moe_load_balance_loss'] = float(lb_loss.item() if torch.is_tensor(lb_loss) else lb_loss)
+        metrics['moe_z_loss'] = float(z_loss.item() if torch.is_tensor(z_loss) else z_loss)
     
     return metrics
 
