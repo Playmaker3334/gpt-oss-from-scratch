@@ -1,8 +1,3 @@
-"""
-GPT-OSS Model Implementation
-Main model class combining all components
-"""
-
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple, Union, List
@@ -25,31 +20,27 @@ class GPTOSSOutput:
 
 
 class GPTOSSModel(nn.Module):
-    """
-    GPT-OSS base model without language modeling head
-    """
-
     def __init__(
         self,
         vocab_size: int = 201088,
-        hidden_size: int = 2880,
-        num_layers: int = 24,
-        num_attention_heads: int = 64,
-        num_key_value_heads: int = 8,
-        intermediate_size: int = 5760,
-        num_experts: int = 32,
-        num_experts_per_token: int = 4,
-        max_position_embeddings: int = 131072,
+        hidden_size: int = 512,
+        num_layers: int = 4,
+        num_attention_heads: int = 8,
+        num_key_value_heads: int = 2,
+        intermediate_size: int = 1024,
+        num_experts: int = 4,
+        num_experts_per_token: int = 2,
+        max_position_embeddings: int = 512,
         rope_theta: float = 10000.0,
-        use_attention_sinks: bool = True,
+        use_attention_sinks: bool = False,
         attention_sink_size: int = 4,
-        use_sparse_attention: bool = True,
+        use_sparse_attention: bool = False,
         sparse_window_size: int = 128,
         rms_norm_eps: float = 1e-5,
-        aux_loss_coef: float = 0.01,
+        aux_loss_coef: float = 0.001,
         router_jitter_noise: float = 0.0,
         pad_token_id: int = 200002,
-        gradient_checkpointing: bool = False,
+        gradient_checkpointing: bool = True,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None
     ):
@@ -100,11 +91,11 @@ class GPTOSSModel(nn.Module):
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=0.02)
+            module.weight.data.normal_(mean=0.0, std=0.01)
             if module.bias is not None:
                 module.bias.data.zero_()
         elif isinstance(module, nn.Embedding):
-            module.weight.data.normal_(mean=0.0, std=0.02)
+            module.weight.data.normal_(mean=0.0, std=0.01)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
 
@@ -119,15 +110,10 @@ class GPTOSSModel(nn.Module):
         output_router_losses: bool = True,
         use_cache: bool = False
     ) -> Tuple[torch.Tensor, ...]:
-        """
-        Forward pass through GPT-OSS model.
-
-        Returns a tuple:
-          (hidden_states, past_key_values?, hidden_states_all?, attentions_all?, router_losses?)
-        """
         batch_size, seq_len = input_ids.shape
 
         hidden_states = self.embed_tokens(input_ids)
+        hidden_states = torch.clamp(hidden_states, min=-10, max=10)
 
         causal = create_causal_mask(
             seq_len,
@@ -137,8 +123,7 @@ class GPTOSSModel(nn.Module):
         if attention_mask is None:
             attn_bias = causal
         else:
-            pad = (1.0 - attention_mask[:, None, None, :].to(hidden_states.dtype)) \
-                  * torch.finfo(hidden_states.dtype).min
+            pad = (1.0 - attention_mask[:, None, None, :].to(hidden_states.dtype)) * torch.finfo(hidden_states.dtype).min
             attn_bias = causal + pad
 
         if position_ids is None:
@@ -164,31 +149,27 @@ class GPTOSSModel(nn.Module):
 
 
 class GPTOSSForCausalLM(nn.Module):
-    """
-    GPT-OSS for causal language modeling
-    """
-
     def __init__(
         self,
         vocab_size: int = 201088,
-        hidden_size: int = 2880,
-        num_layers: int = 24,
-        num_attention_heads: int = 64,
-        num_key_value_heads: int = 8,
-        intermediate_size: int = 5760,
-        num_experts: int = 32,
-        num_experts_per_token: int = 4,
-        max_position_embeddings: int = 131072,
+        hidden_size: int = 512,
+        num_layers: int = 4,
+        num_attention_heads: int = 8,
+        num_key_value_heads: int = 2,
+        intermediate_size: int = 1024,
+        num_experts: int = 4,
+        num_experts_per_token: int = 2,
+        max_position_embeddings: int = 512,
         rope_theta: float = 10000.0,
-        use_attention_sinks: bool = True,
+        use_attention_sinks: bool = False,
         attention_sink_size: int = 4,
-        use_sparse_attention: bool = True,
+        use_sparse_attention: bool = False,
         sparse_window_size: int = 128,
         rms_norm_eps: float = 1e-5,
-        aux_loss_coef: float = 0.01,
+        aux_loss_coef: float = 0.001,
         router_jitter_noise: float = 0.0,
         pad_token_id: int = 200002,
-        gradient_checkpointing: bool = False,
+        gradient_checkpointing: bool = True,
         tie_word_embeddings: bool = True,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None
@@ -228,7 +209,7 @@ class GPTOSSForCausalLM(nn.Module):
             self.lm_head.weight = self.model.embed_tokens.token_embedding.weight
 
         if not tie_word_embeddings:
-            nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.02)
+            nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.01)
 
     def forward(
         self,
@@ -243,13 +224,6 @@ class GPTOSSForCausalLM(nn.Module):
         use_cache: bool = False,
         return_tuple: bool = False,
     ):
-        """
-        Forward pass for causal language modeling.
-
-        If return_tuple is True, returns:
-          (loss, logits, hidden_states_all, attentions_all, past_key_values, router_losses)
-        Otherwise returns a GPTOSSOutput dataclass.
-        """
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -263,20 +237,18 @@ class GPTOSSForCausalLM(nn.Module):
 
         hidden_states = outputs[0]
         logits = self.lm_head(hidden_states)
+        logits = torch.clamp(logits, min=-10, max=10)
 
         loss = None
         router_losses = outputs[4] if (output_router_losses and len(outputs) > 4) else None
 
         if labels is not None:
-            # Shift
             shift_logits = logits[:, :-1, :].contiguous()
             shift_labels = labels[:, 1:].contiguous()
 
-            # Ignora padding en labels
             pad_id = self.model.pad_token_id
             shift_labels = shift_labels.masked_fill(shift_labels == pad_id, -100)
 
-            # === PÉRDIDA EN FP32 (fuera de autocast) PARA EVITAR NaNs EN FP16 ===
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
             with torch.amp.autocast("cuda", enabled=False):
                 loss = loss_fct(
@@ -284,14 +256,13 @@ class GPTOSSForCausalLM(nn.Module):
                     shift_labels.view(-1)
                 )
 
-            # Suma pérdidas del router en fp32 por estabilidad
             if router_losses is not None:
                 lb_loss, z_loss = router_losses
                 if torch.is_tensor(lb_loss):
                     lb_loss = lb_loss.float()
                 if torch.is_tensor(z_loss):
                     z_loss = z_loss.float()
-                loss = loss + lb_loss + z_loss
+                loss = loss + lb_loss * 0.1 + z_loss * 0.1
 
         if return_tuple:
             return (
@@ -324,16 +295,13 @@ class GPTOSSForCausalLM(nn.Module):
         eos_token_id: Optional[int] = None,
         use_cache: bool = True
     ) -> torch.Tensor:
-        """
-        Generate text using the model.
-        """
         batch_size = input_ids.shape[0]
         device = input_ids.device
 
         if pad_token_id is None:
             pad_token_id = self.model.pad_token_id
         if eos_token_id is None:
-            eos_token_id = 200001  # Harmony tokenizer default EOS
+            eos_token_id = 200001
 
         generated = input_ids
         past_key_values = None
@@ -357,7 +325,6 @@ class GPTOSSForCausalLM(nn.Module):
                 filtered_logits = self._top_k_top_p_filtering(
                     logits, top_k=top_k, top_p=top_p
                 )
-                # fp32 para estabilidad al convertir a probs
                 probs = torch.softmax(filtered_logits.float(), dim=-1)
                 next_tokens = torch.multinomial(probs, num_samples=1)
             else:
@@ -380,9 +347,6 @@ class GPTOSSForCausalLM(nn.Module):
         top_p: float = 1.0,
         filter_value: float = -float('Inf')
     ) -> torch.Tensor:
-        """
-        Filter logits using top-k and/or top-p (nucleus) filtering.
-        """
         batch_size, vocab_size = logits.shape
 
         if top_k > 0:

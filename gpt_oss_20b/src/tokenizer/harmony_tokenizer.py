@@ -20,7 +20,7 @@ class HarmonyTokenizer:
         self,
         vocab_file: Optional[str] = None,
         merges_file: Optional[str] = None,
-        vocab_size: int = 201088,
+        vocab_size: int = 50257,
         model_max_length: int = 131072,
         padding_side: str = "left",
         use_harmony_format: bool = True
