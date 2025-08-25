@@ -70,19 +70,24 @@ class GPTOSSConfig:
         
         per_layer = 0
         
+        # Atención: proyección de salida + (QK compartidos por GQA) + proyección final
         per_layer += self.hidden_size * self.hidden_size
         per_layer += self.hidden_size * (self.hidden_size // self.num_attention_heads * self.num_key_value_heads) * 2
         per_layer += self.hidden_size * self.hidden_size
         
+        # MoE
         expert_params = 3 * self.hidden_size * self.intermediate_size
         per_layer += expert_params * self.num_experts
         
+        # Router
         per_layer += self.hidden_size * self.num_experts
         
+        # Norms
         per_layer += 2 * self.hidden_size
         
         params += per_layer * self.num_layers
         
+        # Norm final + LM head
         params += self.hidden_size
         params += self.hidden_size * self.vocab_size
         
@@ -98,16 +103,56 @@ class GPTOSSConfig:
         per_layer += self.hidden_size * (self.hidden_size // self.num_attention_heads * self.num_key_value_heads) * 2
         per_layer += self.hidden_size * self.hidden_size
         
+        # Solo expertos activos por token
         expert_params = 3 * self.hidden_size * self.intermediate_size
         per_layer += expert_params * self.num_experts_per_token
         
+        # Router
         per_layer += self.hidden_size * self.num_experts
         
+        # Norms
         per_layer += 2 * self.hidden_size
         
         params += per_layer * self.num_layers
         
+        # Norm final + LM head
         params += self.hidden_size
         params += self.hidden_size * self.vocab_size
         
         return params
+
+
+# === Mini config añadida (sin eliminar nada de arriba) ===
+class GPTOSSConfigMini(GPTOSSConfig):
+    """
+    Config 'Mini' para Kaggle/GPUs limitadas. Mantiene vocab grande
+    para compatibilidad con IDs de special tokens (~200k).
+    """
+    def __init__(self):
+        super().__init__()
+        # Compatibilidad con tokenizer (special tokens 200000+)
+        self.vocab_size = max(self.vocab_size, 201088)
+        self.pad_token_id = 200002
+
+        # Capacidad moderada
+        self.hidden_size = 512
+        self.num_layers = 8                 # sube capas para mejor capacidad; baja a 4 si falta VRAM
+        self.num_attention_heads = 8
+        self.num_key_value_heads = 4        # GQA (8 % 4 == 0)
+
+        # FFN/MoE (conservador en memoria)
+        self.intermediate_size = 1024       # mantiene tu valor base para reducir memoria
+        self.num_experts = 4
+        self.num_experts_per_token = 2
+
+        # Longitud y Rotary
+        self.max_position_embeddings = 2048
+        self.rope_theta = 1_000_000.0
+
+        # Norm eps coherente
+        self.rms_norm_eps = 1e-5
+        if self.use_rms_norm:
+            self.layer_norm_epsilon = self.rms_norm_eps
+
+        # Recalcular derivados/asserciones
+        self.__post_init__()
