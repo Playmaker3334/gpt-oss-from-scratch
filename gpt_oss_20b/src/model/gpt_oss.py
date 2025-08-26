@@ -222,7 +222,7 @@ class GPTOSSForCausalLM(nn.Module):
         output_hidden_states: bool = False,
         output_router_losses: bool = True,
         use_cache: bool = False,
-        return_tuple: bool = False,
+        return_dict: bool = True,
     ):
         outputs = self.model(
             input_ids=input_ids,
@@ -264,24 +264,18 @@ class GPTOSSForCausalLM(nn.Module):
                     z_loss = z_loss.float()
                 loss = loss + lb_loss * 0.1 + z_loss * 0.1
 
-        if return_tuple:
-            return (
-                loss,
-                logits,
-                outputs[2] if output_hidden_states else None,
-                outputs[3] if output_attentions else None,
-                outputs[1] if use_cache else None,
-                router_losses,
-            )
-        else:
-            return GPTOSSOutput(
-                logits=logits,
-                hidden_states=outputs[2] if output_hidden_states else None,
-                attentions=outputs[3] if output_attentions else None,
-                past_key_values=outputs[1] if use_cache else None,
-                router_losses=router_losses,
-                loss=loss
-            )
+        if not return_dict:
+            output = (logits,) + outputs[1:]
+            return ((loss,) + output) if loss is not None else output
+
+        return GPTOSSOutput(
+            loss=loss,
+            logits=logits,
+            hidden_states=outputs[2] if output_hidden_states else None,
+            attentions=outputs[3] if output_attentions else None,
+            past_key_values=outputs[1] if use_cache else None,
+            router_losses=router_losses
+        )
 
     def generate(
         self,

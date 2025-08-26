@@ -306,9 +306,14 @@ class Trainer:
             outputs = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                labels=labels
+                labels=labels,
+                return_dict=not self.is_multi_gpu
             )
-            loss = outputs.loss / self.grad_accum_steps
+            
+            if self.is_multi_gpu:
+                loss = outputs[0] / self.grad_accum_steps
+            else:
+                loss = outputs.loss / self.grad_accum_steps
 
         if self.scaler is not None:
             self.scaler.scale(loss).backward()
@@ -371,12 +376,20 @@ class Trainer:
             outputs = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                labels=labels
+                labels=labels,
+                return_dict=not self.is_multi_gpu
             )
-            loss = outputs.loss
+            
+            if self.is_multi_gpu:
+                loss = outputs[0]
+                logits = outputs[1]
+            else:
+                loss = outputs.loss
+                logits = outputs.logits
+                
             total_loss += loss.item()
 
-            preds = torch.argmax(outputs.logits, dim=-1)
+            preds = torch.argmax(logits, dim=-1)
             mask = labels != PAD_ID
             correct = (preds[mask] == labels[mask]).sum().item()
             total_correct += correct
