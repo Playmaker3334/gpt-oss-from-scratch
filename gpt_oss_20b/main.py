@@ -1,8 +1,3 @@
-# main.py
-"""
-Main training script for GPT-OSS - Multi-GPU Version
-"""
-
 import os
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -19,7 +14,6 @@ from src.model.gpt_oss import GPTOSSForCausalLM
 from src.tokenizer.harmony_tokenizer import HarmonyTokenizer
 from src.utils.tensor_utils import get_device, count_parameters
 from src.utils.math_utils import warmup_cosine_schedule, compute_grad_norm
-
 
 OUTPUT_DIR = "./output"
 TOKENIZER_SAVE_DIR = "./output/tokenizer"
@@ -38,11 +32,10 @@ MIXED_PRECISION = False
 GRADIENT_CHECKPOINTING = True
 
 DEFAULT_CONFIG = GPTOSSConfigMini()
-PAD_ID = DEFAULT_CONFIG.pad_token_id  # usado en collate_fn
+PAD_ID = DEFAULT_CONFIG.pad_token_id
 
 
 class MetricsTracker:
-    """Tracks training metrics with rolling averages"""
     def __init__(self, window_size: int = 100):
         self.window_size = window_size
         self.losses = deque(maxlen=window_size)
@@ -93,7 +86,6 @@ class MetricsTracker:
 
 
 class TextFileDataset(Dataset):
-    """Dataset simple que lee un archivo de texto y devuelve ids tokenizados por línea."""
     def __init__(self, file_path: str, tokenizer: HarmonyTokenizer, seq_len: int = 2048):
         self.file_path = file_path
         self.seq_len = seq_len
@@ -107,7 +99,6 @@ class TextFileDataset(Dataset):
     def __getitem__(self, idx: int):
         text = self.lines[idx]
         ids = self.tokenizer.encode(text)
-        # For simplicity, pad/truncate to seq_len
         if len(ids) < self.seq_len:
             ids = ids + [PAD_ID] * (self.seq_len - len(ids))
         else:
@@ -217,9 +208,10 @@ def configure_model(default_config: GPTOSSConfigMini,
         aux_loss_coef=default_config.aux_loss_coef,
         router_jitter_noise=default_config.router_jitter_noise,
         pad_token_id=default_config.pad_token_id,
+        gradient_checkpointing=gradient_checkpointing,
+        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+        dtype=torch.float32
     )
-    if gradient_checkpointing:
-        model.gradient_checkpointing_enable()
     return model
 
 
@@ -277,14 +269,6 @@ class Trainer:
         else:
             self._wandb = None
 
-        # LR scheduler
-        self.lr_scheduler = warmup_cosine_schedule(learning_rate, warmup_steps, max_steps)
-
-        # Build eval loader if not provided
-        if self.eval_loader is None:
-            self.eval_loader = None
-
-        # Optimizer
         model_params = self.model.module.parameters() if self.is_multi_gpu else self.model.parameters()
         self.optimizer = AdamW(
             model_params, 
@@ -293,9 +277,6 @@ class Trainer:
             weight_decay=0.01, 
             eps=1e-6
         )
-
-        # AMP scaler (solo si se pide por flag)
-        self.scaler = torch.cuda.amp.GradScaler() if mixed_precision and torch.cuda.is_available() else None
 
         if self.use_wandb:
             try:
@@ -351,8 +332,11 @@ class Trainer:
 
             self.optimizer.zero_grad(set_to_none=True)
 
-            # LR scheduler update
-            lr = next(self.lr_scheduler)
+            lr = warmup_cosine_schedule(
+                self.global_step, self.warmup_steps, self.max_steps, 0.0, self.learning_rate
+            )
+            for pg in self.optimizer.param_groups:
+                pg["lr"] = lr
         else:
             lr = self.optimizer.param_groups[0]["lr"]
 
@@ -392,7 +376,6 @@ class Trainer:
             loss = outputs.loss
             total_loss += loss.item()
 
-            # Simple token-level accuracy (cuando label != PAD)
             preds = torch.argmax(outputs.logits, dim=-1)
             mask = labels != PAD_ID
             correct = (preds[mask] == labels[mask]).sum().item()
@@ -435,7 +418,7 @@ class Trainer:
             save_checkpoint(self.model, self.optimizer, self.global_step, output_dir)
 
     def train(self, output_dir: str, eval_steps: int, save_steps: int):
-        for epoch in range(10**9):  # endless epochs until max_steps
+        for epoch in range(10**9):
             for batch in self.train_loader:
                 metrics = self.train_step(batch)
                 self.maybe_log()
@@ -475,18 +458,14 @@ def main():
     device = get_device()
     print(f"[INFO] Using device: {device}")
 
-    # Tokenizer
     if os.path.isdir(args.tokenizer_dir) and os.path.isfile(os.path.join(args.tokenizer_dir, "tokenizer.json")):
         tokenizer = HarmonyTokenizer.from_pretrained(args.tokenizer_dir)
     else:
         tokenizer = setup_tokenizer(args.tokenizer_dir)
 
-    # Model
     model = configure_model(DEFAULT_CONFIG, gradient_checkpointing=args.gradient_checkpointing)
-    print(model)
-    print(f"[INFO] Model parameters: {count_parameters(model):,}")
+    print(f"[INFO] Model parameters: {count_parameters(model)['trainable']:,}")
 
-    # Data
     loaders = create_dataloaders(
         train_path=args.train_data,
         eval_path=args.eval_data,
@@ -497,7 +476,6 @@ def main():
     train_loader = loaders["train"]
     eval_loader = loaders["eval"]
 
-    # Trainer
     trainer = Trainer(
         model=model,
         tokenizer=tokenizer,
@@ -514,16 +492,13 @@ def main():
         use_wandb=args.use_wandb
     )
 
-    # Optionally load checkpoint
     start_step = load_checkpoint_if_available(trainer.model, trainer.optimizer, args.output_dir)
     if start_step > 0:
         trainer.global_step = start_step
         print(f"[INFO] Resuming from step {start_step}")
 
-    # Train
     trainer.train(output_dir=args.output_dir, eval_steps=args.eval_steps, save_steps=args.save_steps)
 
-    # Save final tokenizer (again)
     tokenizer.save_pretrained(args.tokenizer_dir)
     print("[INFO] Done.")
 
