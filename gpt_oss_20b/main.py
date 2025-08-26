@@ -22,14 +22,17 @@ BATCH_SIZE = 1
 LEARNING_RATE = 3e-4
 WARMUP_STEPS = 500
 MAX_STEPS = 2000
+NUM_EPOCHS = 10
 GRAD_ACCUM_STEPS = 8
 MAX_GRAD_NORM = 1.0
-EVAL_STEPS = 200
-SAVE_STEPS = 500
+LOG_EVERY = 100
+SAVE_EVERY_EPOCHS = 1
+GENERATION_PROMPT = "The meaning of life is"
 
 USE_WANDB = False
 MIXED_PRECISION = False
 GRADIENT_CHECKPOINTING = True
+USE_EPOCHS = False
 
 DEFAULT_CONFIG = GPTOSSConfigMini()
 PAD_ID = DEFAULT_CONFIG.pad_token_id
@@ -50,6 +53,7 @@ class MetricsTracker:
         self.step_start_time = time.time()
         self.batch_size = 1
         self.seq_len = 2048
+        self.current_epoch = 0
 
     def update(self, metrics: Dict):
         if 'loss' in metrics:
@@ -61,6 +65,8 @@ class MetricsTracker:
             self.grad_norms.append(metrics['grad_norm'])
         if 'lr' in metrics:
             self.learning_rates.append(metrics['lr'])
+        if 'epoch' in metrics:
+            self.current_epoch = metrics['epoch']
 
     def report(self) -> Dict:
         def avg(x):
@@ -80,6 +86,7 @@ class MetricsTracker:
             "steps_per_sec": steps_per_sec,
             "tokens_per_sec": tps,
             "global_step": self.global_step,
+            "epoch": self.current_epoch,
             "uptime_s": int(elapsed),
             "ram_gb": psutil.virtual_memory().used / (1024**3),
         }
@@ -119,33 +126,33 @@ def collate_fn(batch):
     }
 
 
-def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, step: int, output_dir: str):
+def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, step: int, epoch: int, output_dir: str):
     os.makedirs(output_dir, exist_ok=True)
-    ckpt_path = os.path.join(output_dir, f"checkpoint_step_{step}.pt")
+    ckpt_path = os.path.join(output_dir, f"checkpoint_epoch_{epoch}_step_{step}.pt")
     state = {
         "model": model.module.state_dict() if isinstance(model, torch.nn.DataParallel) else model.state_dict(),
         "optimizer": optimizer.state_dict(),
-        "step": step
+        "step": step,
+        "epoch": epoch
     }
     torch.save(state, ckpt_path)
-    print(f"[INFO] Checkpoint saved at: {ckpt_path}")
+    return ckpt_path
 
 
 def load_checkpoint_if_available(model: torch.nn.Module, optimizer: Optional[torch.optim.Optimizer], output_dir: str):
     if not os.path.isdir(output_dir):
-        return 0
-    files = [f for f in os.listdir(output_dir) if f.startswith("checkpoint_step_") and f.endswith(".pt")]
+        return 0, 0
+    files = [f for f in os.listdir(output_dir) if f.startswith("checkpoint_") and f.endswith(".pt")]
     if not files:
-        return 0
-    files.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]))
+        return 0, 0
+    files.sort(key=lambda x: int(x.split("_")[3].split(".")[0]))
     latest = files[-1]
     path = os.path.join(output_dir, latest)
-    print(f"[INFO] Loading checkpoint from {path}")
     data = torch.load(path, map_location="cpu")
     model.load_state_dict(data["model"], strict=False)
     if optimizer is not None and "optimizer" in data:
         optimizer.load_state_dict(data["optimizer"])
-    return int(data.get("step", 0))
+    return int(data.get("step", 0)), int(data.get("epoch", 0))
 
 
 def setup_tokenizer(tokenizer_dir: str) -> HarmonyTokenizer:
@@ -226,8 +233,11 @@ class Trainer:
                  learning_rate: float,
                  warmup_steps: int,
                  max_steps: int,
+                 num_epochs: int,
                  grad_accum_steps: int,
                  max_grad_norm: float,
+                 use_epochs: bool = False,
+                 log_every: int = 100,
                  mixed_precision: bool = False,
                  use_wandb: bool = False):
 
@@ -240,34 +250,26 @@ class Trainer:
         self.learning_rate = learning_rate
         self.warmup_steps = warmup_steps
         self.max_steps = max_steps
+        self.num_epochs = num_epochs
         self.grad_accum_steps = grad_accum_steps
         self.max_grad_norm = max_grad_norm
+        self.use_epochs = use_epochs
+        self.log_every = log_every
         self.mixed_precision = mixed_precision
         self.use_wandb = use_wandb
 
         self.is_multi_gpu = torch.cuda.device_count() > 1 and isinstance(self.model, torch.nn.Module)
         if self.is_multi_gpu:
-            print(f"[INFO] Using DataParallel over {torch.cuda.device_count()} GPUs")
+            print(f"Using DataParallel with {torch.cuda.device_count()} GPUs")
             self.model = torch.nn.DataParallel(self.model)
 
         self.global_step = 0
-        self.step_in_epoch = 0
+        self.current_epoch = 0
         self.metrics = MetricsTracker(window_size=100)
         self.metrics.batch_size = batch_size
         self.metrics.seq_len = DEFAULT_CONFIG.max_position_embeddings
 
         self.scaler = torch.cuda.amp.GradScaler() if mixed_precision and torch.cuda.is_available() else None
-
-        if use_wandb:
-            try:
-                import wandb as _wandb
-                self._wandb = _wandb
-                self._wandb.init(project="gpt-oss-training")
-            except Exception as e:
-                print(f"[WARN] W&B not available: {e}")
-                self._wandb = None
-        else:
-            self._wandb = None
 
         model_params = self.model.module.parameters() if self.is_multi_gpu else self.model.parameters()
         self.optimizer = AdamW(
@@ -278,23 +280,15 @@ class Trainer:
             eps=1e-6
         )
 
-        if self.use_wandb:
+        if use_wandb:
             try:
                 import wandb as _wandb
                 self._wandb = _wandb
-                self._wandb.init(
-                    project="gpt-oss-training",
-                    config={
-                        "batch_size": batch_size,
-                        "learning_rate": learning_rate,
-                        "max_steps": max_steps,
-                        "model_params": count_parameters(model),
-                        "multi_gpu": self.is_multi_gpu,
-                    }
-                )
+                self._wandb.init(project="gpt-oss-training")
             except Exception as e:
-                print(f"[WARN] W&B init failed: {e}")
                 self._wandb = None
+        else:
+            self._wandb = None
 
     def train_step(self, batch) -> Dict:
         self.model.train()
@@ -311,7 +305,7 @@ class Trainer:
             )
             
             if self.is_multi_gpu:
-                loss = outputs[0].mean() / self.grad_accum_steps  # Added .mean() here
+                loss = outputs[0].mean() / self.grad_accum_steps
             else:
                 loss = outputs.loss / self.grad_accum_steps
 
@@ -338,7 +332,9 @@ class Trainer:
             self.optimizer.zero_grad(set_to_none=True)
 
             lr = warmup_cosine_schedule(
-                self.global_step, self.warmup_steps, self.max_steps, 0.0, self.learning_rate
+                self.global_step, self.warmup_steps, 
+                self.max_steps if not self.use_epochs else self.warmup_steps * 10,
+                0.0, self.learning_rate
             )
             for pg in self.optimizer.param_groups:
                 pg["lr"] = lr
@@ -350,7 +346,8 @@ class Trainer:
         self.metrics.update({
             "loss": loss.item() * self.grad_accum_steps,
             "grad_norm": grad_norm,
-            "lr": lr
+            "lr": lr,
+            "epoch": self.current_epoch
         })
 
         return {
@@ -381,7 +378,7 @@ class Trainer:
             )
             
             if self.is_multi_gpu:
-                loss = outputs[0]
+                loss = outputs[0].mean()
                 logits = outputs[1]
             else:
                 loss = outputs.loss
@@ -399,48 +396,110 @@ class Trainer:
         accuracy = total_correct / max(total_tokens, 1)
         return {"eval_loss": avg_loss, "eval_accuracy": accuracy}
 
-    def maybe_log(self):
-        if self.global_step % 10 == 0:
-            rep = self.metrics.report()
-            print(
-                f"[step {rep['global_step']}] loss={rep['loss']:.4f} "
-                f"ppl={rep['ppl']:.2f} acc={rep['acc']:.3f} "
-                f"grad={rep['grad_norm']:.2f} lr={rep['lr']:.6f} "
-                f"steps/s={rep['steps_per_sec']:.2f} tok/s={int(rep['tokens_per_sec'])} "
-                f"uptime_s={rep['uptime_s']} ram_gb={rep['ram_gb']:.2f}"
-            )
-            if self._wandb is not None:
-                try:
-                    self._wandb.log(rep)
-                except Exception as e:
-                    print(f"[WARN] W&B log failed: {e}")
+    @torch.no_grad()
+    def generate_sample(self, prompt: str, max_length: int = 50) -> str:
+        self.model.eval()
+        input_ids = self.tokenizer.encode(prompt)
+        input_ids = torch.tensor([input_ids], dtype=torch.long).to(self.device)
+        
+        generated = self.model.module.generate(
+            input_ids=input_ids,
+            max_length=max_length,
+            temperature=0.8,
+            top_k=50,
+            top_p=0.95,
+            do_sample=True
+        ) if self.is_multi_gpu else self.model.generate(
+            input_ids=input_ids,
+            max_length=max_length,
+            temperature=0.8,
+            top_k=50,
+            top_p=0.95,
+            do_sample=True
+        )
+        
+        return self.tokenizer.decode(generated[0].tolist(), skip_special_tokens=True)
 
-    def maybe_eval_and_save(self, output_dir: str, eval_steps: int, save_steps: int):
-        if self.global_step % eval_steps == 0 and self.eval_loader is not None:
-            eval_metrics = self.evaluate()
-            msg = f"Eval @step {self.global_step}: " + \
-                  ", ".join([f"{k}={v:.4f}" for k, v in eval_metrics.items()])
-            print(msg)
-            if self._wandb is not None:
-                try:
-                    self._wandb.log({"eval": eval_metrics, "step": self.global_step})
-                except Exception as e:
-                    print(f"[WARN] W&B eval log failed: {e}")
+    def train_epochs(self, output_dir: str, save_every_epochs: int, generation_prompt: str):
+        print(f"\nStarting training for {self.num_epochs} epochs\n")
+        
+        for epoch in range(self.current_epoch, self.num_epochs):
+            self.current_epoch = epoch
+            epoch_loss = 0.0
+            epoch_steps = 0
+            
+            print(f"===== Epoch {epoch + 1}/{self.num_epochs} =====")
+            
+            for batch_idx, batch in enumerate(self.train_loader):
+                metrics = self.train_step(batch)
+                epoch_loss += metrics['loss']
+                epoch_steps += 1
+                
+                if self.global_step % self.log_every == 0 and self.global_step > 0:
+                    rep = self.metrics.report()
+                    print(f"[Epoch {epoch+1} Step {self.global_step}] "
+                          f"loss={rep['loss']:.4f} ppl={rep['ppl']:.2f} "
+                          f"lr={rep['lr']:.6f} tok/s={int(rep['tokens_per_sec'])}")
+            
+            avg_epoch_loss = epoch_loss / max(epoch_steps, 1)
+            print(f"\nEpoch {epoch + 1} completed. Avg loss: {avg_epoch_loss:.4f}")
+            
+            if self.eval_loader is not None:
+                eval_metrics = self.evaluate()
+                print(f"Evaluation: loss={eval_metrics['eval_loss']:.4f} "
+                      f"accuracy={eval_metrics['eval_accuracy']:.4f}")
+            
+            generated_text = self.generate_sample(generation_prompt)
+            print(f"\nGeneration sample: {generated_text}\n")
+            
+            if (epoch + 1) % save_every_epochs == 0:
+                ckpt_path = save_checkpoint(
+                    self.model, self.optimizer, 
+                    self.global_step, epoch + 1, output_dir
+                )
+                print(f"Checkpoint saved: {ckpt_path}")
+            
+            print("-" * 50 + "\n")
+        
+        print("Training completed!")
+        final_ckpt = save_checkpoint(
+            self.model, self.optimizer, 
+            self.global_step, self.num_epochs, output_dir
+        )
+        print(f"Final checkpoint saved: {final_ckpt}")
 
-        if self.global_step % save_steps == 0:
-            save_checkpoint(self.model, self.optimizer, self.global_step, output_dir)
-
-    def train(self, output_dir: str, eval_steps: int, save_steps: int):
-        for epoch in range(10**9):
+    def train_steps(self, output_dir: str, save_steps: int):
+        print(f"\nStarting training for {self.max_steps} steps\n")
+        
+        epoch_iter = 0
+        while self.global_step < self.max_steps:
             for batch in self.train_loader:
                 metrics = self.train_step(batch)
-                self.maybe_log()
-                self.maybe_eval_and_save(output_dir, eval_steps, save_steps)
-
+                
+                if self.global_step % self.log_every == 0 and self.global_step > 0:
+                    rep = self.metrics.report()
+                    print(f"[Step {self.global_step}/{self.max_steps}] "
+                          f"loss={rep['loss']:.4f} ppl={rep['ppl']:.2f} "
+                          f"lr={rep['lr']:.6f} tok/s={int(rep['tokens_per_sec'])}")
+                
+                if self.global_step % save_steps == 0 and self.global_step > 0:
+                    ckpt_path = save_checkpoint(
+                        self.model, self.optimizer, 
+                        self.global_step, epoch_iter, output_dir
+                    )
+                    print(f"Checkpoint saved: {ckpt_path}")
+                
                 if self.global_step >= self.max_steps:
-                    print("[INFO] Training complete.")
-                    save_checkpoint(self.model, self.optimizer, self.global_step, output_dir)
-                    return
+                    break
+            
+            epoch_iter += 1
+        
+        print("\nTraining completed!")
+        final_ckpt = save_checkpoint(
+            self.model, self.optimizer, 
+            self.global_step, epoch_iter, output_dir
+        )
+        print(f"Final checkpoint saved: {final_ckpt}")
 
 
 def parse_args():
@@ -451,10 +510,16 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=LEARNING_RATE)
     parser.add_argument("--warmup_steps", type=int, default=WARMUP_STEPS)
     parser.add_argument("--max_steps", type=int, default=MAX_STEPS)
+    parser.add_argument("--num_epochs", type=int, default=NUM_EPOCHS)
+    parser.add_argument("--use_epochs", action="store_true", default=USE_EPOCHS,
+                       help="Train by epochs instead of steps")
     parser.add_argument("--grad_accum_steps", type=int, default=GRAD_ACCUM_STEPS)
     parser.add_argument("--max_grad_norm", type=float, default=MAX_GRAD_NORM)
-    parser.add_argument("--eval_steps", type=int, default=EVAL_STEPS)
-    parser.add_argument("--save_steps", type=int, default=SAVE_STEPS)
+    parser.add_argument("--log_every", type=int, default=LOG_EVERY)
+    parser.add_argument("--save_steps", type=int, default=500)
+    parser.add_argument("--save_every_epochs", type=int, default=SAVE_EVERY_EPOCHS)
+    parser.add_argument("--generation_prompt", type=str, default=GENERATION_PROMPT,
+                       help="Prompt for generation at the end of each epoch")
     parser.add_argument("--output_dir", type=str, default=OUTPUT_DIR)
     parser.add_argument("--tokenizer_dir", type=str, default=TOKENIZER_SAVE_DIR)
     parser.add_argument("--mixed_precision", action="store_true", default=MIXED_PRECISION)
@@ -469,7 +534,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     device = get_device()
-    print(f"[INFO] Using device: {device}")
+    print(f"Device: {device}")
 
     if os.path.isdir(args.tokenizer_dir) and os.path.isfile(os.path.join(args.tokenizer_dir, "tokenizer.json")):
         tokenizer = HarmonyTokenizer.from_pretrained(args.tokenizer_dir)
@@ -477,7 +542,7 @@ def main():
         tokenizer = setup_tokenizer(args.tokenizer_dir)
 
     model = configure_model(DEFAULT_CONFIG, gradient_checkpointing=args.gradient_checkpointing)
-    print(f"[INFO] Model parameters: {count_parameters(model)['trainable']:,}")
+    print(f"Model parameters: {count_parameters(model)['trainable']:,}")
 
     loaders = create_dataloaders(
         train_path=args.train_data,
@@ -499,21 +564,35 @@ def main():
         learning_rate=args.learning_rate,
         warmup_steps=args.warmup_steps,
         max_steps=args.max_steps,
+        num_epochs=args.num_epochs,
         grad_accum_steps=args.grad_accum_steps,
         max_grad_norm=args.max_grad_norm,
+        use_epochs=args.use_epochs,
+        log_every=args.log_every,
         mixed_precision=args.mixed_precision,
         use_wandb=args.use_wandb
     )
 
-    start_step = load_checkpoint_if_available(trainer.model, trainer.optimizer, args.output_dir)
+    start_step, start_epoch = load_checkpoint_if_available(trainer.model, trainer.optimizer, args.output_dir)
     if start_step > 0:
         trainer.global_step = start_step
-        print(f"[INFO] Resuming from step {start_step}")
+        trainer.current_epoch = start_epoch
+        print(f"Resuming from epoch {start_epoch}, step {start_step}")
 
-    trainer.train(output_dir=args.output_dir, eval_steps=args.eval_steps, save_steps=args.save_steps)
+    if args.use_epochs:
+        trainer.train_epochs(
+            output_dir=args.output_dir,
+            save_every_epochs=args.save_every_epochs,
+            generation_prompt=args.generation_prompt
+        )
+    else:
+        trainer.train_steps(
+            output_dir=args.output_dir,
+            save_steps=args.save_steps
+        )
 
     tokenizer.save_pretrained(args.tokenizer_dir)
-    print("[INFO] Done.")
+    print("Done!")
 
 
 if __name__ == "__main__":
