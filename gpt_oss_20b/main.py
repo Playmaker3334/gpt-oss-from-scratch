@@ -311,7 +311,7 @@ class Trainer:
             )
             
             if self.is_multi_gpu:
-                loss = outputs[0] / self.grad_accum_steps
+                loss = outputs[0].mean() / self.grad_accum_steps  # Added .mean() here
             else:
                 loss = outputs.loss / self.grad_accum_steps
 
