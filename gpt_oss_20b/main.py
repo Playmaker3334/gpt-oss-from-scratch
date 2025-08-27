@@ -1,4 +1,5 @@
 import os
+import math
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.optim import AdamW
@@ -290,6 +291,16 @@ class Trainer:
         else:
             self._wandb = None
 
+        # === LR scheduling por updates ===
+        self.opt_step = 0
+        micro_steps_per_epoch = len(self.train_loader)
+        updates_per_epoch = math.ceil(micro_steps_per_epoch / self.grad_accum_steps)
+        if self.use_epochs:
+            self.total_opt_steps = self.num_epochs * updates_per_epoch
+        else:
+            self.total_opt_steps = math.ceil(self.max_steps / self.grad_accum_steps)
+        self.warmup_updates = max(1, math.ceil(self.warmup_steps / self.grad_accum_steps))
+
     def train_step(self, batch) -> Dict:
         self.model.train()
         input_ids = batch["input_ids"].to(self.device, non_blocking=True)
@@ -331,9 +342,12 @@ class Trainer:
 
             self.optimizer.zero_grad(set_to_none=True)
 
+            # scheduler por update
+            self.opt_step += 1
             lr = warmup_cosine_schedule(
-                self.global_step, self.warmup_steps, 
-                self.max_steps if not self.use_epochs else self.warmup_steps * 10,
+                self.opt_step,
+                self.warmup_updates,
+                self.total_opt_steps,
                 0.0, self.learning_rate
             )
             for pg in self.optimizer.param_groups:
@@ -577,6 +591,7 @@ def main():
     if start_step > 0:
         trainer.global_step = start_step
         trainer.current_epoch = start_epoch
+        trainer.opt_step = start_step // trainer.grad_accum_steps
         print(f"Resuming from epoch {start_epoch}, step {start_step}")
 
     if args.use_epochs:
@@ -597,3 +612,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
