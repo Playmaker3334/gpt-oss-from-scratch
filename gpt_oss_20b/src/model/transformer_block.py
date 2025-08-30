@@ -97,7 +97,6 @@ class GPTOSSTransformerBlock(nn.Module):
 
         attn_hidden = attn_outputs[0]
         hidden_states = residual + attn_hidden
-        hidden_states = torch.clamp(hidden_states, min=-100, max=100)
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
@@ -108,7 +107,6 @@ class GPTOSSTransformerBlock(nn.Module):
         )
 
         hidden_states = residual + moe_output
-        hidden_states = torch.clamp(hidden_states, min=-100, max=100)
 
         outputs = (hidden_states,)
         if output_attentions:

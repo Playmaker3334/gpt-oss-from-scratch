@@ -135,7 +135,6 @@ class GroupedQueryAttention(nn.Module):
         value_states = self._repeat_kv(value_states.transpose(1, 2)).transpose(1, 2)
         
         attn_weights = torch.matmul(query_states, key_states.transpose(-1, -2)) / math.sqrt(self.head_dim)
-        attn_weights = torch.clamp(attn_weights, min=-50, max=50)
         
         if self.use_sparse:
             sparse_mask = self._get_sparse_attention_mask(

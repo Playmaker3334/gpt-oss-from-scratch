@@ -38,7 +38,6 @@ class Router(nn.Module):
         batch_size, seq_len, hidden_size = hidden_states.shape
         
         router_logits = self.gate(hidden_states.float())
-        router_logits = torch.clamp(router_logits, min=-10, max=10)
         
         if training and self.jitter_noise > 0:
             noise = torch.randn_like(router_logits) * self.jitter_noise
@@ -132,7 +131,6 @@ class ExpertChoiceRouter(nn.Module):
         batch_size, seq_len, _ = hidden_states.shape
         
         router_logits = self.gate(hidden_states.float())
-        router_logits = torch.clamp(router_logits, min=-10, max=10)
         router_probs = F.softmax(router_logits, dim=-1)
         
         dispatch_mask = torch.zeros_like(router_probs)

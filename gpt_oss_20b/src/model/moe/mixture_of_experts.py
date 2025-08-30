@@ -62,8 +62,6 @@ class MixtureOfExperts(nn.Module):
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         batch_size, seq_len, hidden_size = hidden_states.shape
         
-        hidden_states = torch.clamp(hidden_states, min=-10, max=10)
-        
         router_weights, selected_experts, lb_loss, z_loss = self.router(
             hidden_states.float(), training=self.training
         )
@@ -73,11 +71,9 @@ class MixtureOfExperts(nn.Module):
                 hidden_states, router_weights, selected_experts
             )
         else:
-            expert_output = self._forward_standard(
+            expert_output = self._forward_efficient(
                 hidden_states, router_weights, selected_experts
             )
-            
-        expert_output = torch.clamp(expert_output, min=-10, max=10)
             
         if output_router_losses:
             return expert_output, (lb_loss, z_loss)
@@ -104,7 +100,7 @@ class MixtureOfExperts(nn.Module):
             
         return output
     
-    def _forward_standard(
+    def _forward_efficient(
         self,
         hidden_states: torch.Tensor,
         router_weights: torch.Tensor,
@@ -113,23 +109,55 @@ class MixtureOfExperts(nn.Module):
         batch_size, seq_len, hidden_size = hidden_states.shape
         output = torch.zeros_like(hidden_states)
         
-        hidden_states_flat = hidden_states.view(-1, hidden_size)
-        output_flat = output.view(-1, hidden_size)
-        router_weights_flat = router_weights.view(-1, self.num_experts_per_token)
-        selected_experts_flat = selected_experts.view(-1, self.num_experts_per_token)
-        
-        for token_idx in range(hidden_states_flat.size(0)):
-            token_hidden = hidden_states_flat[token_idx]
+        for expert_idx in range(self.num_experts):
+            expert_mask = (selected_experts == expert_idx).any(dim=-1)
+            
+            if not expert_mask.any():
+                continue
+            
+            expert_tokens = hidden_states[expert_mask]
+            
+            if expert_tokens.numel() == 0:
+                continue
+                
+            expert_output = self.experts[expert_idx](expert_tokens)
             
             for k in range(self.num_experts_per_token):
-                expert_idx = selected_experts_flat[token_idx, k].item()
-                expert_weight = router_weights_flat[token_idx, k]
+                weight_mask = selected_experts[:, :, k] == expert_idx
+                if weight_mask.any():
+                    weights = router_weights[:, :, k:k+1]
+                    output[weight_mask] += weights[weight_mask] * expert_output[weight_mask[expert_mask]]
+        
+        return output
+    
+    def _forward_standard(
+        self,
+        hidden_states: torch.Tensor,
+        router_weights: torch.Tensor,
+        selected_experts: torch.Tensor
+    ) -> torch.Tensor:
+        batch_size, seq_len, hidden_size = hidden_states.shape
+        hidden_states_flat = hidden_states.view(-1, hidden_size)
+        output = torch.zeros_like(hidden_states_flat)
+        
+        for expert_idx in range(self.num_experts):
+            expert_mask_flat = torch.zeros(batch_size * seq_len, dtype=torch.bool, device=hidden_states.device)
+            expert_weights_sum = torch.zeros(batch_size * seq_len, 1, device=hidden_states.device)
+            
+            for k in range(self.num_experts_per_token):
+                mask = (selected_experts[:, :, k] == expert_idx).view(-1)
+                expert_mask_flat |= mask
+                weights = router_weights[:, :, k].view(-1, 1)
+                expert_weights_sum[mask] += weights[mask]
+            
+            if not expert_mask_flat.any():
+                continue
                 
-                expert_output = self.experts[expert_idx](token_hidden.unsqueeze(0))
-                
-                output_flat[token_idx] += expert_weight * expert_output.squeeze(0)
-                
-        return output_flat.view(batch_size, seq_len, hidden_size)
+            expert_input = hidden_states_flat[expert_mask_flat]
+            expert_output = self.experts[expert_idx](expert_input)
+            output[expert_mask_flat] += expert_weights_sum[expert_mask_flat] * expert_output
+        
+        return output.view(batch_size, seq_len, hidden_size)
     
     def balance_load(self, tokens_per_expert: torch.Tensor) -> torch.Tensor:
         ideal_tokens = tokens_per_expert.sum() / self.num_experts
@@ -144,8 +172,6 @@ class SparseMoE(MixtureOfExperts):
         output_router_losses: bool = True
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         batch_size, seq_len, hidden_size = hidden_states.shape
-        
-        hidden_states = torch.clamp(hidden_states, min=-10, max=10)
         
         router_weights, selected_experts, lb_loss, z_loss = self.router(
             hidden_states.float(), training=self.training
@@ -183,7 +209,6 @@ class SparseMoE(MixtureOfExperts):
             output[expert_mask] += expert_weights * expert_output
             
         output = output.view(batch_size, seq_len, hidden_size)
-        output = torch.clamp(output, min=-10, max=10)
         
         if output_router_losses:
             return output, (lb_loss, z_loss)

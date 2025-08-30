@@ -36,7 +36,7 @@ GRADIENT_CHECKPOINTING = True
 USE_EPOCHS = False
 
 DEFAULT_CONFIG = GPTOSSConfigMini()
-PAD_ID = DEFAULT_CONFIG.pad_token_id
+PAD_ID = 100277  
 
 
 class MetricsTracker:
@@ -170,13 +170,15 @@ def create_dataloaders(train_path: str,
                        seq_len: int) -> Dict[str, Optional[DataLoader]]:
 
     train_ds = TextFileDataset(train_path, tokenizer=tokenizer, seq_len=seq_len)
+    num_workers = min(4, os.cpu_count() or 0)
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
         shuffle=True,
         collate_fn=collate_fn,
-        num_workers=0,
-        pin_memory=True if torch.cuda.is_available() else False
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=True if num_workers > 0 else False
     )
 
     if eval_path and os.path.isfile(eval_path):
@@ -186,8 +188,9 @@ def create_dataloaders(train_path: str,
             batch_size=batch_size,
             shuffle=False,
             collate_fn=collate_fn,
-            num_workers=0,
-            pin_memory=True if torch.cuda.is_available() else False
+            num_workers=num_workers,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=True if num_workers > 0 else False
         )
     else:
         eval_loader = None
@@ -270,7 +273,7 @@ class Trainer:
         self.metrics.batch_size = batch_size
         self.metrics.seq_len = DEFAULT_CONFIG.max_position_embeddings
 
-        self.scaler = torch.cuda.amp.GradScaler() if mixed_precision and torch.cuda.is_available() else None
+        self.scaler = torch.amp.GradScaler('cuda') if mixed_precision and torch.cuda.is_available() else None
 
         model_params = self.model.module.parameters() if self.is_multi_gpu else self.model.parameters()
         self.optimizer = AdamW(
@@ -291,7 +294,6 @@ class Trainer:
         else:
             self._wandb = None
 
-        # === LR scheduling por updates ===
         self.opt_step = 0
         micro_steps_per_epoch = len(self.train_loader)
         updates_per_epoch = math.ceil(micro_steps_per_epoch / self.grad_accum_steps)
@@ -307,7 +309,7 @@ class Trainer:
         attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
         labels = batch["labels"].to(self.device, non_blocking=True)
 
-        with torch.autocast(device_type="cuda", enabled=self.mixed_precision):
+        with torch.cuda.amp.autocast(enabled=self.mixed_precision):
             outputs = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -342,7 +344,6 @@ class Trainer:
 
             self.optimizer.zero_grad(set_to_none=True)
 
-            # scheduler por update
             self.opt_step += 1
             lr = warmup_cosine_schedule(
                 self.opt_step,
@@ -612,4 +613,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

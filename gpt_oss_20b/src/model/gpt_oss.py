@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import math
 from typing import Optional, Tuple, Union, List
 from dataclasses import dataclass
 
@@ -49,6 +50,7 @@ class GPTOSSModel(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.pad_token_id = pad_token_id
+        self.aux_loss_coef = aux_loss_coef
 
         self.embed_tokens = GPTOSSEmbedding(
             vocab_size=vocab_size,
@@ -91,11 +93,13 @@ class GPTOSSModel(nn.Module):
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=0.01)
+            std = 0.02 / math.sqrt(2 * self.num_layers)
+            module.weight.data.normal_(mean=0.0, std=std)
             if module.bias is not None:
                 module.bias.data.zero_()
         elif isinstance(module, nn.Embedding):
-            module.weight.data.normal_(mean=0.0, std=0.01)
+            std = 0.02 / math.sqrt(2 * self.num_layers)
+            module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
 
@@ -113,7 +117,6 @@ class GPTOSSModel(nn.Module):
         batch_size, seq_len = input_ids.shape
 
         hidden_states = self.embed_tokens(input_ids)
-        hidden_states = torch.clamp(hidden_states, min=-10, max=10)
 
         causal = create_causal_mask(
             seq_len,
@@ -175,6 +178,7 @@ class GPTOSSForCausalLM(nn.Module):
         dtype: Optional[torch.dtype] = None
     ):
         super().__init__()
+        self.aux_loss_coef = aux_loss_coef
 
         self.model = GPTOSSModel(
             vocab_size=vocab_size,
@@ -209,7 +213,8 @@ class GPTOSSForCausalLM(nn.Module):
             self.lm_head.weight = self.model.embed_tokens.token_embedding.weight
 
         if not tie_word_embeddings:
-            nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.01)
+            std = 0.02 / math.sqrt(2 * num_layers)
+            nn.init.normal_(self.lm_head.weight, mean=0.0, std=std)
 
     def forward(
         self,
@@ -237,7 +242,6 @@ class GPTOSSForCausalLM(nn.Module):
 
         hidden_states = outputs[0]
         logits = self.lm_head(hidden_states)
-        logits = torch.clamp(logits, min=-10, max=10)
 
         loss = None
         router_losses = outputs[4] if (output_router_losses and len(outputs) > 4) else None
@@ -250,11 +254,10 @@ class GPTOSSForCausalLM(nn.Module):
             shift_labels = shift_labels.masked_fill(shift_labels == pad_id, -100)
 
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-            with torch.amp.autocast("cuda", enabled=False):
-                loss = loss_fct(
-                    shift_logits.float().view(-1, shift_logits.size(-1)),
-                    shift_labels.view(-1)
-                )
+            loss = loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1)
+            )
 
             if router_losses is not None:
                 lb_loss, z_loss = router_losses
@@ -262,7 +265,7 @@ class GPTOSSForCausalLM(nn.Module):
                     lb_loss = lb_loss.float()
                 if torch.is_tensor(z_loss):
                     z_loss = z_loss.float()
-                loss = loss + lb_loss * 0.1 + z_loss * 0.1
+                loss = loss + self.aux_loss_coef * lb_loss + 0.01 * z_loss
 
         if not return_dict:
             output = (logits,) + outputs[1:]
