@@ -1,3 +1,7 @@
+"""
+Harmony Tokenizer wrapper using tiktoken
+"""
+
 import json
 import os
 from typing import List, Optional, Dict, Union
@@ -32,11 +36,12 @@ class HarmonyTokenizer:
         self.encoder = tiktoken.get_encoding(encoding_name)
         self.vocab_size = self.encoder.n_vocab
         
-        self.bos_token_id = self.encoder.encode("<|endoftext|>")[0] if "<|endoftext|>" in self.encoder._special_tokens else 0
-        self.eos_token_id = self.encoder.encode("<|endoftext|>")[0] if "<|endoftext|>" in self.encoder._special_tokens else 0
-        self.pad_token_id = self.vocab_size
+        # Usar IDs seguros que sabemos que existen
+        self.bos_token_id = 100256  # Token especial en cl100k_base
+        self.eos_token_id = 100256  
+        self.pad_token_id = 100277  # Fuera del rango del vocab para padding
         
-        self.bos_token = "<|endoftext|>"
+        self.bos_token = "<|startoftext|>"
         self.eos_token = "<|endoftext|>"
         self.pad_token = "<|pad|>"
         
@@ -58,9 +63,10 @@ class HarmonyTokenizer:
         if isinstance(text, list):
             text = " ".join(text)
         
-        token_ids = self.encoder.encode(text)
+        # Encoding básico sin intentar agregar tokens especiales que no existen
+        token_ids = self.encoder.encode(text, allowed_special="all")
         
-        if add_special_tokens and self.bos_token_id is not None:
+        if add_special_tokens:
             token_ids = [self.bos_token_id] + token_ids + [self.eos_token_id]
         
         if truncation and max_length:
@@ -91,11 +97,13 @@ class HarmonyTokenizer:
         if skip_special_tokens:
             token_ids = [t for t in token_ids if t not in [self.bos_token_id, self.eos_token_id, self.pad_token_id]]
         
+        # Filtrar tokens fuera del rango válido
         token_ids = [t for t in token_ids if 0 <= t < self.vocab_size]
         
         try:
             text = self.encoder.decode(token_ids)
-        except:
+        except Exception as e:
+            # Si hay error, devolver string vacío
             text = ""
             
         return text
