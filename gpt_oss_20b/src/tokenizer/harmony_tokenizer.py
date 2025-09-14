@@ -1,6 +1,3 @@
-"""
-Harmony Tokenizer wrapper using tiktoken
-"""
 
 import json
 import os
@@ -22,7 +19,7 @@ class HarmonyTokenizer:
         self,
         vocab_file: Optional[str] = None,
         merges_file: Optional[str] = None,
-        vocab_size: int = 100277,
+        vocab_size: int = 100256,
         model_max_length: int = 131072,
         padding_side: str = "left",
         use_harmony_format: bool = False,
@@ -34,12 +31,12 @@ class HarmonyTokenizer:
         self.encoding_name = encoding_name
         
         self.encoder = tiktoken.get_encoding(encoding_name)
-        self.vocab_size = self.encoder.n_vocab
+        self.vocab_size = 100256
         
         # Usar IDs seguros que sabemos que existen
-        self.bos_token_id = 100256  # Token especial en cl100k_base
-        self.eos_token_id = 100256  
-        self.pad_token_id = 100277  # Fuera del rango del vocab para padding
+        self.bos_token_id = 100255
+        self.eos_token_id = 100255  
+        self.pad_token_id = 100254
         
         self.bos_token = "<|startoftext|>"
         self.eos_token = "<|endoftext|>"
@@ -98,7 +95,7 @@ class HarmonyTokenizer:
             token_ids = [t for t in token_ids if t not in [self.bos_token_id, self.eos_token_id, self.pad_token_id]]
         
         # Filtrar tokens fuera del rango válido
-        token_ids = [t for t in token_ids if 0 <= t < self.vocab_size]
+        token_ids = [t for t in token_ids if 0 <= t < 100256]
         
         try:
             text = self.encoder.decode(token_ids)

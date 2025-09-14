@@ -36,7 +36,7 @@ GRADIENT_CHECKPOINTING = True
 USE_EPOCHS = False
 
 DEFAULT_CONFIG = GPTOSSConfigMini()
-PAD_ID = 100277  
+PAD_ID = 100254  
 
 
 class MetricsTracker:
