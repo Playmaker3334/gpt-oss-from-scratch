@@ -90,7 +90,7 @@ The model uses a **sparse Mixture-of-Experts (MoE) Transformer** with several mo
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/gpt-oss-from-scratch.git
+git clone https://github.com/Playmaker3334/gpt-oss-from-scratch.git
 cd gpt-oss-from-scratch/gpt_oss_20b
 
 # Install deps
@@ -286,8 +286,4 @@ For reference, **GPT-2 (124M)** trained on **~40GB** achieves perplexity ~30 —
 
 ---
 
-## License
 
-MIT License — see [LICENSE](./LICENSE).
-
----
