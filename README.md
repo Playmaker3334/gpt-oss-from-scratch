@@ -229,8 +229,8 @@ gpt_oss_20b/
 | Metric | Value | Context |
 |---|---|---|
 | Final Loss | 7.5 | expected for this scale / data |
-| Perplexity | ~1900 | typical for ~73M params on ~150MB |
-| Hardware | 2 × NVIDIA P100 (16GB) | FP32 by default; AMP optional |
+| Perplexity | ~1900 | ~73M params on ~150MB |
+| Hardware | 2 × NVIDIA P100 (16GB) | FP32 |
 
 
 For reference, **GPT-2 (124M)** trained on **~40GB** achieves perplexity ~30 — orders of magnitude more data and scale.
@@ -285,5 +285,6 @@ For reference, **GPT-2 (124M)** trained on **~40GB** achieves perplexity ~30 —
 ```
 
 ---
+
 
 
