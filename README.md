@@ -1,30 +1,21 @@
 
-<!-- Title -->
+
 <h1 align="center">GPT‑OSS From Scratch</h1>
 
-<p align="center">
-  <em>An educational, from‑scratch implementation of a modern MoE Transformer inspired by GPT‑OSS.</em>
-</p>
+<p align="center"><em>An educational, from‑scratch implementation of a modern MoE Transformer inspired by GPT‑OSS.</em></p>
 
 <p align="center">
   <a href="https://www.python.org/">
-    <img alt="Python" src="https://img.shields.io/badge/Python-3.8%2B-blue.svg">
+    <img alt="Python" src="https://img.shields.io/badge/Python-3.8%2B-%23c4b5fd.svg?style=flat-square&labelColor=1f2937">
   </a>
   <a href="https://pytorch.org/">
-    <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c.svg">
+    <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-2.0%2B-%23c4b5fd.svg?style=flat-square&labelColor=1f2937">
   </a>
   <a href="./LICENSE">
-    <img alt="License" src="https://img.shields.io/badge/License-MIT-green.svg">
+    <img alt="License" src="https://img.shields.io/badge/License-MIT-%23c4b5fd.svg?style=flat-square&labelColor=1f2937">
   </a>
-  <img alt="Model Size" src="https://img.shields.io/badge/Parameters-73.4M-7b3fe4.svg">
-  <img alt="Architecture" src="https://img.shields.io/badge/Architecture-MoE--Transformer-f97316.svg">
-</p>
-
-<!-- Colorful heads‑up / warning box -->
-<p align="center">
-  <a href="#important-note" style="text-decoration:none;">
-    <img alt="Heads‑up: Experimental" src="https://img.shields.io/badge/Heads%E2%80%91up-Experimental-%23ffcc00?style=for-the-badge&logo=github">
-  </a>
+  <img alt="Model Size" src="https://img.shields.io/badge/Parameters-73.4M-%23c4b5fd.svg?style=flat-square&labelColor=1f2937">
+  <img alt="Architecture" src="https://img.shields.io/badge/Architecture-MoE--Transformer-%23c4b5fd.svg?style=flat-square&labelColor=1f2937">
 </p>
 
 <p align="center">
@@ -43,11 +34,9 @@
 
 This project implements a <strong>73.4M‑parameter</strong> language model from scratch, incorporating modern innovations from recent transformer research. It is built to learn how today’s LLMs are structured and trained and to experiment with ideas like <em>Mixture of Experts (MoE), Grouped Query Attention (GQA), RoPE with YaRN,</em> and more.
 
-> 💡 **Goal:** Provide a clear, hackable reference you can read, modify, and extend — not a production model.
+> **Goal:** Provide a clear, hackable reference you can read, modify, and extend — not a production model.
 
-<a id="important-note"></a>
-> ### ⚡ Heads‑up — Experimental
-> This implementation is intended **for learning and experimentation only**. It trades production hardening for readability. Expect rough edges (e.g., minimal inference optimizations, small dataset, modest parameter count).
+> **Heads‑up — Experimental.** This implementation is intended for learning and experimentation only. It trades production hardening for readability. Expect rough edges (e.g., minimal inference optimizations, small dataset, modest parameter count).
 
 ---
 
@@ -97,12 +86,12 @@ flowchart LR
 
 ## Features
 
-- ✅ **MoE** with token‑choice routing, auxiliary load‑balancing losses (importance + z‑loss), and jitter noise.
-- ✅ **GQA** to reduce KV memory while maintaining performance.
-- ✅ **RoPE + YaRN** for length extrapolation.
-- ✅ **Attention sinks** for stability.
-- ✅ **Clean PyTorch 2.x code**, easy to read and extend.
-- ✅ **Educational defaults** suitable for a single‑GPU experiment.
+- **MoE** with token‑choice routing, auxiliary load‑balancing losses (importance + z‑loss), and jitter noise.  
+- **GQA** to reduce KV memory while maintaining performance.  
+- **RoPE + YaRN** for length extrapolation.  
+- **Attention sinks** for stability.  
+- Clean **PyTorch 2.x** code, easy to read and extend.  
+- Educational defaults suitable for a **single‑GPU** experiment.
 
 ---
 
@@ -230,25 +219,25 @@ gpt_oss_20b/
 
 ### Mixture of Experts
 
-- **Token‑choice routing** with softmax normalization  
-- **Auxiliary losses** for load balancing (importance + z‑loss)  
-- **Expert parallelism** friendly design  
-- **Router jitter noise** during training for exploration  
-- **Efficient batching** of expert computations
+- Token‑choice routing with softmax normalization  
+- Auxiliary losses for load balancing (importance + z‑loss)  
+- Expert‑parallelism‑friendly design  
+- Router jitter noise during training for exploration  
+- Efficient batching of expert computations
 
 ### Attention (GQA)
 
-- **2:1** ratio of query to key‑value heads  
-- Optional **sparse** / **sliding‑window** patterns  
-- **Attention sinks** to stabilize training  
-- Architecture is **Flash‑Attention–ready**
+- 2:1 ratio of query to key‑value heads  
+- Optional sparse / sliding‑window patterns  
+- Attention sinks to stabilize training  
+- Flash‑Attention–ready architecture
 
 ### Position Embeddings
 
-- **RoPE** with **YaRN** extension for better length generalization  
-- **Base theta:** 1,000,000 for extended context  
-- **NTK‑aware** interpolation  
-- **Dynamic** positional indices
+- RoPE with YaRN extension for better length generalization  
+- Base theta: 1,000,000 for extended context  
+- NTK‑aware interpolation  
+- Dynamic positional indices
 
 ---
 
@@ -261,7 +250,7 @@ gpt_oss_20b/
 | Throughput | ~5.6k tok/s | single T4 |
 | Total Time | ~8 hrs | 3 epochs |
 
-> For reference, **GPT‑2 (124M)** trained on **~40GB** achieves perplexity ~30 — orders of magnitude more data and scale.
+For reference, **GPT‑2 (124M)** trained on **~40GB** achieves perplexity ~30 — orders of magnitude more data and scale.
 
 ---
 
@@ -281,20 +270,20 @@ gpt_oss_20b/
 
 ## Limitations
 
-- **Scale:** 73.4M parameters — do not expect complex reasoning or long‑form coherence.  
-- **Data:** Trained on ~150MB (vs. TBs for prod models).  
-- **Optimization:** Lacks prod inference features (quantization, Flash‑Attention kernels, etc.).  
-- **Purpose:** Learning and experimentation — **not** deployment.
+- Scale: 73.4M parameters — do not expect complex reasoning or long‑form coherence.  
+- Data: trained on ~150MB (vs. TBs for production models).  
+- Optimization: lacks production features (quantization, custom kernels, etc.).  
+- Purpose: learning and experimentation — not deployment.
 
 ---
 
 ## Roadmap
 
-- [ ] Add Flash‑Attention and fused kernels
-- [ ] BF16 / FP8 training support
-- [ ] 4‑bit / 8‑bit quantized inference
-- [ ] Longer context (4k–8k)
-- [ ] More robust evaluation harness
+- Add Flash‑Attention and fused kernels  
+- BF16 / FP8 training support  
+- 4‑bit / 8‑bit quantized inference  
+- Longer context (4k–8k)  
+- More robust evaluation harness
 
 ---
 
@@ -320,10 +309,3 @@ MIT License — see [LICENSE](./LICENSE).
 
 ---
 
-## Quick Start (Spanish)
-
-1. Copia este archivo como **README.md** en tu repo.  
-2. Instala dependencias: `pip install "torch>=2.0" tiktoken numpy tqdm`  
-3. Prepara datos: `python prep_corpus.py`  
-4. Entrena: `python main.py ...` (mira la sección *Usage*).  
-5. ¡Listo para experimentar! 🚀
