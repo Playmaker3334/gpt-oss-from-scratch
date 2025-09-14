@@ -1,8 +1,12 @@
+<!--
+  GPT-OSS From Scratch — README
+  Author: Rogelio Novelo (you can change this)
+  License: MIT
+-->
 
+<h1 align="center">GPT-OSS From Scratch</h1>
 
-<h1 align="center">GPT‑OSS From Scratch</h1>
-
-<p align="center"><em>An educational, from‑scratch implementation of a modern MoE Transformer inspired by GPT‑OSS.</em></p>
+<p align="center"><em>An educational, from-scratch implementation of a modern MoE Transformer inspired by GPT-OSS.</em></p>
 
 <p align="center">
   <a href="https://www.python.org/">
@@ -32,28 +36,28 @@
 
 ## Overview
 
-This project implements a <strong>73.4M‑parameter</strong> language model from scratch, incorporating modern innovations from recent transformer research. It is built to learn how today’s LLMs are structured and trained and to experiment with ideas like <em>Mixture of Experts (MoE), Grouped Query Attention (GQA), RoPE with YaRN,</em> and more.
+This project implements a <strong>73.4M-parameter</strong> language model from scratch, incorporating modern innovations from recent transformer research. It is built to learn how today’s LLMs are structured and trained and to experiment with ideas like <em>Mixture of Experts (MoE), Grouped Query Attention (GQA), RoPE with YaRN,</em> and more.
 
 > **Goal:** Provide a clear, hackable reference you can read, modify, and extend — not a production model.
 
-> **Heads‑up — Experimental.** This implementation is intended for learning and experimentation only. It trades production hardening for readability. Expect rough edges (e.g., minimal inference optimizations, small dataset, modest parameter count).
+> **Heads-up — Experimental.** This implementation is intended for learning and experimentation only. It trades production hardening for readability. Expect rough edges (e.g., minimal inference optimizations, small dataset, modest parameter count).
 
 ---
 
 ## Architecture
 
-The model uses a **sparse Mixture‑of‑Experts (MoE) Transformer** with several modern optimizations.
+The model uses a **sparse Mixture-of-Experts (MoE) Transformer** with several modern optimizations.
 
 ### Core Components
 
 | Component | Description | Configuration |
 |---|---|---|
-| **Mixture of Experts** | Sparse routing with top‑k selection | 4 experts, 2 active per token |
-| **Grouped Query Attention (GQA)** | Memory‑efficient attention | 8 Q heads, 4 KV heads |
+| **Mixture of Experts** | Sparse routing with top-k selection | 4 experts, 2 active per token |
+| **Grouped Query Attention (GQA)** | Memory-efficient attention | 8 Q heads, 4 KV heads |
 | **RoPE + YaRN** | Positional encoding with better length generalization | 2,048 context |
-| **Attention Sinks** | Learned per‑head biases for stability | per‑head params |
+| **Attention Sinks** | Learned per-head biases for stability | per-head params |
 | **SwiGLU** | Gated FFN for expressivity | fused impl |
-| **RMSNorm** | Scale‑invariant normalization | `eps=1e-5` |
+| **RMSNorm** | Scale-invariant normalization | `eps=1e-5` |
 
 ### Model Configuration (Mini)
 
@@ -61,10 +65,10 @@ The model uses a **sparse Mixture‑of‑Experts (MoE) Transformer** with severa
 - **Transformer Layers:** 4  
 - **Hidden Size:** 512  
 - **Vocabulary:** 100,256 (tiktoken `cl100k_base`)  
-- **Experts:** 4 (top‑2 / token)  
+- **Experts:** 4 (top-2 / token)  
 - **Intermediate Size:** 768  
 - **Max Seq Len:** 2048  
-- **Attention:** 8 query heads, 4 key‑value heads  
+- **Attention:** 8 query heads, 4 key-value heads  
 
 <details>
 <summary><strong>Mermaid Overview (click)</strong></summary>
@@ -75,7 +79,7 @@ flowchart LR
   E --> B1[Transformer Block × 4]
   subgraph Block
     A[Attention (GQA + RoPE + Sinks)] --> N1[RMSNorm]
-    N1 --> M[MoE (Top‑2 of 4 Experts)]
+    N1 --> M[MoE (Top-2 of 4 Experts)]
     M --> N2[RMSNorm]
   end
   B1 --> H[Head / LM Logits] --> O[Softmax]
@@ -86,12 +90,12 @@ flowchart LR
 
 ## Features
 
-- **MoE** with token‑choice routing, auxiliary load‑balancing losses (importance + z‑loss), and jitter noise.  
+- **MoE** with token-choice routing, auxiliary load-balancing losses (importance + z-loss), and jitter noise.  
 - **GQA** to reduce KV memory while maintaining performance.  
 - **RoPE + YaRN** for length extrapolation.  
 - **Attention sinks** for stability.  
 - Clean **PyTorch 2.x** code, easy to read and extend.  
-- Educational defaults suitable for a **single‑GPU** experiment.
+- Educational defaults suitable for a **single-GPU** or **dual-GPU (DDP)** experiment.
 
 ---
 
@@ -101,7 +105,8 @@ flowchart LR
 - Python **3.8+**
 - PyTorch **2.0+**
 - CUDA **11.7+** (for GPU)
-- **8GB+ VRAM** recommended
+- **16GB VRAM** per GPU minimum recommended  
+- Reference hardware for this repo: **2 × NVIDIA P100 (16GB)**
 
 ### Setup
 
@@ -125,7 +130,7 @@ pip install "torch>=2.0" tiktoken numpy tqdm
 python prep_corpus.py
 ```
 
-### 2) Training
+### 2) Training (single GPU)
 
 ```bash
 python main.py \
@@ -139,7 +144,23 @@ python main.py \
   --gradient_checkpointing
 ```
 
-### 3) Text Generation (Toy)
+### 2b) Training (dual GPU via DDP)
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 main.py \
+  --train_data train.txt \
+  --eval_data eval.txt \
+  --num_epochs 3 \
+  --batch_size 1 \
+  --grad_accum_steps 8 \
+  --learning_rate 3e-4 \
+  --warmup_steps 500 \
+  --gradient_checkpointing
+```
+
+> Notes: P100 does not provide Tensor Cores; mixed precision (AMP) may not speed up training. Leave FP32 as default or benchmark AMP cautiously.
+
+### 3) Text Generation (toy)
 
 ```python
 from src.model.gpt_oss import GPTOSSForCausalLM
@@ -219,24 +240,24 @@ gpt_oss_20b/
 
 ### Mixture of Experts
 
-- Token‑choice routing with softmax normalization  
-- Auxiliary losses for load balancing (importance + z‑loss)  
-- Expert‑parallelism‑friendly design  
+- Token-choice routing with softmax normalization  
+- Auxiliary losses for load balancing (importance + z-loss)  
+- Expert-parallelism-friendly design  
 - Router jitter noise during training for exploration  
 - Efficient batching of expert computations
 
 ### Attention (GQA)
 
-- 2:1 ratio of query to key‑value heads  
-- Optional sparse / sliding‑window patterns  
+- 2:1 ratio of query to key-value heads  
+- Optional sparse / sliding-window patterns  
 - Attention sinks to stabilize training  
-- Flash‑Attention–ready architecture
+- Flash-Attention–ready architecture
 
 ### Position Embeddings
 
 - RoPE with YaRN extension for better length generalization  
 - Base theta: 1,000,000 for extended context  
-- NTK‑aware interpolation  
+- NTK-aware interpolation  
 - Dynamic positional indices
 
 ---
@@ -247,16 +268,16 @@ gpt_oss_20b/
 |---|---|---|
 | Final Loss | 7.5 | expected for this scale / data |
 | Perplexity | ~1900 | typical for ~73M params on ~150MB |
-| Throughput | ~5.6k tok/s | single T4 |
-| Total Time | ~8 hrs | 3 epochs |
+| Hardware | 2 × NVIDIA P100 (16GB) | FP32 by default; AMP optional |
+| Notes | Throughput and wall time depend on sequence length, batch size, and DDP settings | measure with your config |
 
-For reference, **GPT‑2 (124M)** trained on **~40GB** achieves perplexity ~30 — orders of magnitude more data and scale.
+For reference, **GPT-2 (124M)** trained on **~40GB** achieves perplexity ~30 — orders of magnitude more data and scale.
 
 ---
 
-## Comparison with GPT‑OSS
+## Comparison with GPT-OSS
 
-| Feature | GPT‑OSS (20B) | This Repo | Scale |
+| Feature | GPT-OSS (20B) | This Repo | Scale |
 |---|---:|---:|---:|
 | Parameters | 20B | 73.4M | 1/272× |
 | Experts | 128 | 4 | 1/32× |
@@ -270,7 +291,7 @@ For reference, **GPT‑2 (124M)** trained on **~40GB** achieves perplexity ~30 �
 
 ## Limitations
 
-- Scale: 73.4M parameters — do not expect complex reasoning or long‑form coherence.  
+- Scale: 73.4M parameters — do not expect complex reasoning or long-form coherence.  
 - Data: trained on ~150MB (vs. TBs for production models).  
 - Optimization: lacks production features (quantization, custom kernels, etc.).  
 - Purpose: learning and experimentation — not deployment.
@@ -279,9 +300,9 @@ For reference, **GPT‑2 (124M)** trained on **~40GB** achieves perplexity ~30 �
 
 ## Roadmap
 
-- Add Flash‑Attention and fused kernels  
+- Add Flash-Attention and fused kernels  
 - BF16 / FP8 training support  
-- 4‑bit / 8‑bit quantized inference  
+- 4-bit / 8-bit quantized inference  
 - Longer context (4k–8k)  
 - More robust evaluation harness
 
@@ -308,4 +329,3 @@ For reference, **GPT‑2 (124M)** trained on **~40GB** achieves perplexity ~30 �
 MIT License — see [LICENSE](./LICENSE).
 
 ---
-
