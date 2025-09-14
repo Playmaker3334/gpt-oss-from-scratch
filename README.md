@@ -1,9 +1,3 @@
-<!--
-  GPT-OSS From Scratch — README
-  Author: Rogelio Novelo (you can change this)
-  License: MIT
--->
-
 <h1 align="center">GPT-OSS From Scratch</h1>
 
 <p align="center"><em>An educational, from-scratch implementation of a modern MoE Transformer inspired by GPT-OSS.</em></p>
@@ -70,22 +64,6 @@ The model uses a **sparse Mixture-of-Experts (MoE) Transformer** with several mo
 - **Max Seq Len:** 2048  
 - **Attention:** 8 query heads, 4 key-value heads  
 
-<details>
-<summary><strong>Mermaid Overview (click)</strong></summary>
-
-```mermaid
-flowchart LR
-  T[Token IDs] --> E[Token Embeddings]
-  E --> B1[Transformer Block × 4]
-  subgraph Block
-    A[Attention (GQA + RoPE + Sinks)] --> N1[RMSNorm]
-    N1 --> M[MoE (Top-2 of 4 Experts)]
-    M --> N2[RMSNorm]
-  end
-  B1 --> H[Head / LM Logits] --> O[Softmax]
-```
-</details>
-
 ---
 
 ## Features
@@ -133,29 +111,13 @@ python prep_corpus.py
 ### 2) Training (single GPU)
 
 ```bash
-python main.py \
-  --train_data train.txt \
-  --eval_data eval.txt \
-  --num_epochs 3 \
-  --batch_size 1 \
-  --grad_accum_steps 8 \
-  --learning_rate 3e-4 \
-  --warmup_steps 500 \
-  --gradient_checkpointing
+python main.py   --train_data train.txt   --eval_data eval.txt   --num_epochs 3   --batch_size 1   --grad_accum_steps 8   --learning_rate 3e-4   --warmup_steps 500   --gradient_checkpointing
 ```
 
 ### 2b) Training (dual GPU via DDP)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 main.py \
-  --train_data train.txt \
-  --eval_data eval.txt \
-  --num_epochs 3 \
-  --batch_size 1 \
-  --grad_accum_steps 8 \
-  --learning_rate 3e-4 \
-  --warmup_steps 500 \
-  --gradient_checkpointing
+CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 main.py   --train_data train.txt   --eval_data eval.txt   --num_epochs 3   --batch_size 1   --grad_accum_steps 8   --learning_rate 3e-4   --warmup_steps 500   --gradient_checkpointing
 ```
 
 > Notes: P100 does not provide Tensor Cores; mixed precision (AMP) may not speed up training. Leave FP32 as default or benchmark AMP cautiously.
@@ -329,4 +291,3 @@ For reference, **GPT-2 (124M)** trained on **~40GB** achieves perplexity ~30 —
 MIT License — see [LICENSE](./LICENSE).
 
 ---
-
